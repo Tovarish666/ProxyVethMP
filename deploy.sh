@@ -192,14 +192,14 @@ sleep 30
 step "Устанавливаем qemu-guest-agent через qm terminal..."
 apt install -y -qq expect 2>/dev/null || true
 expect -f - <<EXPECT
-set timeout 120
+set timeout 180
 spawn qm terminal $VM_ID
 sleep 3
 send "\r"
 expect "login:"    { send "root\r" }
 expect "Password:" { send "${VM_PASSWORD}\r" }
-expect "#"         { send "apt install -y -qq qemu-guest-agent && systemctl enable --now qemu-guest-agent\r" }
-expect "#"         { send "\x1d" }
+expect "#"         { send "apt-get update -qq && apt-get install -y -qq qemu-guest-agent && systemctl enable --now qemu-guest-agent && echo AGENT_OK\r" }
+expect "AGENT_OK"  { send "\x1d" }
 EXPECT
 ok "qemu-guest-agent установлен"
 
