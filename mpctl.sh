@@ -71,17 +71,12 @@ vm_run()       { ssh $SSH_OPTS root@"${VM_IP}" bash -s <<< "$1"; }
 vm_reachable() { [[ -n "${VM_IP:-}" ]] && vm_exec true 2>/dev/null; }
 vm_running()   { [[ -n "${VM_ID:-}" ]] && qm status "$VM_ID" 2>/dev/null | grep -q "running"; }
 
-# ── Получить IP через guest agent ────────────────────────────────
-fetch_vm_ip() {
-    qm guest cmd "${1:-$VM_ID}" network-get-interfaces 2>/dev/null | python3 -c "
-import sys, json
-for iface in json.load(sys.stdin):
-    if iface.get('name') == 'lo': continue
-    for a in iface.get('ip-addresses', []):
-        ip = a.get('ip-address','')
-        if a.get('ip-address-type')=='ipv4' and not ip.startswith(('127.','169.254.')):
-            print(ip); sys.exit()
-" 2>/dev/null || echo ""
+# ── Получить IP через ARP по MAC адресу ─────────────────────────
+fetch_vm_ip_arp() {
+    local id="${1:-$VM_ID}"
+    local mac; mac=$(qm config "$id" | grep "^net0:" | grep -oE '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}')
+    [[ -n "$mac" ]] || return 1
+    ip neigh | grep -i "$mac" | grep -v "FAILED\|INCOMPLETE" | awk '{print $1}' | head -1
 }
 
 # ── Dashboard ────────────────────────────────────────────────────
@@ -122,9 +117,8 @@ show_dashboard() {
 need_ip() {
     load_state
     if [[ -z "${VM_IP:-}" ]]; then
-        # попробуем получить из guest agent по VM_ID
         if [[ -n "${VM_ID:-}" ]] && vm_running 2>/dev/null; then
-            VM_IP=$(fetch_vm_ip "$VM_ID")
+            VM_IP=$(fetch_vm_ip_arp "$VM_ID")
             [[ -n "$VM_IP" ]] && { save_state; return; }
         fi
         ask "IP VM:"; _rd VM_IP
@@ -209,7 +203,7 @@ do_install_vm() {
         --name      "$VM_NAME"   --memory  "$VM_RAM"   --cores "$VM_CORES" \
         --cpu       host         --net0    "virtio,bridge=${VM_BRIDGE}" \
         --ostype    l26          --machine q35          --scsihw virtio-scsi-pci \
-        --serial0   socket       --agent   enabled=1    --onboot 1
+        --serial0   socket       --onboot  1
     ok "VM создана (ID=${VM_ID})"
 
     step "Импорт диска..."
@@ -231,47 +225,24 @@ do_install_vm() {
 
     hdr "Запуск VM"
     qm start "$VM_ID"
-    spinner_start "Ждём загрузки VM (30с)..."; sleep 30; spinner_stop
 
-    step "Устанавливаем qemu-guest-agent через qm terminal..."
-    apt-get install -y -qq expect 2>/dev/null
-    expect -f - <<EXPECT
-set timeout 180
-spawn qm terminal $VM_ID
-sleep 3
-send "\r"
-expect "login:"    { send "root\r" }
-expect "Password:" { send "${VM_PASSWORD}\r" }
-expect "#"         { send "apt-get update -qq && apt-get install -y -qq qemu-guest-agent && systemctl enable --now qemu-guest-agent && echo AGENT_OK\r" }
-expect "AGENT_OK"  { send "\x1d" }
-EXPECT
-    ok "qemu-guest-agent установлен"
-
-    spinner_start "Ждём guest agent..."
+    # IP через ARP — ждём пока VM получит адрес по DHCP и появится на бридже
+    spinner_start "Ждём IP (ARP)..."
     local elapsed=0
-    while ! qm guest cmd "$VM_ID" network-get-interfaces &>/dev/null 2>&1; do
+    while true; do
+        VM_IP=$(fetch_vm_ip_arp "$VM_ID")
+        [[ -n "$VM_IP" ]] && break
         sleep 5; elapsed=$((elapsed+5))
-        [[ $elapsed -ge 90 ]] && { spinner_stop; fail "Guest agent не поднялся за 90с"; }
+        [[ $elapsed -ge 120 ]] && { spinner_stop; fail "VM не появилась в ARP за 2 мин. Проверь DHCP/бридж."; }
     done
-    spinner_stop; ok "Guest agent активен"
+    spinner_stop; ok "VM IP: ${VM_IP}"
 
-    VM_IP=$(fetch_vm_ip "$VM_ID")
-    [[ -n "$VM_IP" ]] || fail "Не удалось получить IP VM"
-    ok "VM IP: ${VM_IP}"
-
-    hdr "Фикс SSH"
-    qm guest exec "$VM_ID" -- bash -c \
-        "rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf && \
-         printf 'PasswordAuthentication yes\nPermitRootLogin yes\n' \
-           > /etc/ssh/sshd_config.d/99-allow-password.conf && \
-         systemctl restart ssh" 2>/dev/null || true
-    sleep 3
-
+    # SSH работает по ключу из cloud-init --sshkeys, фиксить конфиг не нужно
     spinner_start "Ждём SSH..."
     elapsed=0
     while ! vm_exec true 2>/dev/null; do
         sleep 5; elapsed=$((elapsed+5))
-        [[ $elapsed -ge 60 ]] && { spinner_stop; fail "SSH недоступен на ${VM_IP}"; }
+        [[ $elapsed -ge 120 ]] && { spinner_stop; fail "SSH недоступен на ${VM_IP}"; }
     done
     spinner_stop; ok "SSH доступен"
 
@@ -279,8 +250,7 @@ EXPECT
     vm_run "
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq && apt-get upgrade -y -qq
-apt-get install -y -qq curl wget mc net-tools qemu-guest-agent
-systemctl enable --now qemu-guest-agent
+apt-get install -y -qq curl wget mc net-tools
 hostnamectl set-hostname ${VM_NAME}
 grep -q '${VM_NAME}' /etc/hosts || echo '127.0.1.1 ${VM_NAME}' >> /etc/hosts
 "
