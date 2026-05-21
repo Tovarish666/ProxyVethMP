@@ -28,29 +28,35 @@ warn() { echo -e "  ${Y}⚠${R} $*"; }
 step() { echo -e "  ${D}→${R} $*"; }
 hdr()  { echo -e "\n${B}══════════════════════════════════════════\n  $*\n══════════════════════════════════════════${R}"; }
 
-# ── Ввод с readline ──────────────────────────────────────────────
-# Дефолт показан в [скобках], поле пустое — Enter принимает дефолт.
-# Backspace/delete работают только на том что ты набрал сам.
+# ── Ввод ─────────────────────────────────────────────────────────
+# Enter на пустом поле = дефолт. Backspace работает нормально.
 # prompt "Метка" "дефолт" VARNAME
 prompt() {
-    local label="$1" default="${2:-}" varname="$3"
-    local hint=""
-    [[ -n "$default" ]] && hint=" ${D}[${default}]${R}"
-    echo -ne "  ${C}?${R} ${label}${hint}: "
-    IFS= read -r -e "$varname" </dev/tty || true
-    # пустой ввод → дефолт
-    [[ -z "${!varname}" && -n "$default" ]] && printf -v "$varname" '%s' "$default"
+    local label="$1" default="${2:-}" varname="$3" reply=""
+    if [[ -n "$default" ]]; then
+        echo -ne "  ${C}?${R} ${label} ${D}[${default}]${R}: "
+    else
+        echo -ne "  ${C}?${R} ${label}: "
+    fi
+    read -r reply </dev/tty || true
+    if [[ -n "$reply" ]]; then
+        printf -v "$varname" '%s' "$reply"
+    else
+        printf -v "$varname" '%s' "$default"
+    fi
 }
 # Пароль (без эха)
 prompt_pass() {
-    local label="$1" varname="$2"
+    local label="$1" varname="$2" reply=""
     echo -ne "  ${C}?${R} ${label}: "
-    IFS= read -rs "$varname" </dev/tty || true; echo ""
+    read -rs reply </dev/tty || true; echo ""
+    printf -v "$varname" '%s' "$reply"
 }
-# Выбор из меню (просто цифра/буква, без дефолта)
+# Выбор из меню
 prompt_choice() {
     echo -ne "  ${C}»${R} Выбор: "
-    IFS= read -r -e CHOICE </dev/tty || true
+    CHOICE=""
+    read -r CHOICE </dev/tty || true
 }
 
 # ── Spinner ──────────────────────────────────────────────────────
