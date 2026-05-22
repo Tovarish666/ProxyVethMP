@@ -222,9 +222,14 @@ show_dashboard() {
         if vm_running 2>/dev/null; then
             vm_status="running"; vm_dot="${G}●${R}"
             if [[ -n "${VM_IP:-}" ]] && vm_reachable 2>/dev/null; then
-                st_mp=$(vm_exec   "systemctl is-active mproxy      2>/dev/null" 2>/dev/null || echo "—")
-                st_pvmp=$(vm_exec "systemctl is-active proxyvethmp 2>/dev/null" 2>/dev/null || echo "—")
-                wan=$(vm_exec "curl -s --max-time 4 2ip.ru" 2>/dev/null || echo "—")
+                local _info
+                _info=$(vm_exec "printf '%s\n%s\n%s\n' \
+                    \"\$(systemctl is-active mproxy 2>/dev/null || echo inactive)\" \
+                    \"\$(systemctl is-active proxyvethmp 2>/dev/null || echo inactive)\" \
+                    \"\$(curl -s --max-time 4 2ip.ru 2>/dev/null || echo '—')\"" 2>/dev/null || echo -e "—\n—\n—")
+                st_mp=$(echo "$_info"   | sed -n '1p')
+                st_pvmp=$(echo "$_info" | sed -n '2p')
+                wan=$(echo "$_info"     | sed -n '3p')
             fi
         else
             vm_status="stopped"; vm_dot="${RD}●${R}"
@@ -539,12 +544,14 @@ do_set_sheet() {
     need_ip
     prompt "SHEET_CSV_URL" "" URL
     [[ -n "${URL:-}" ]] || fail "Пусто"
+    # Экранируем & для sed replacement (&  = "matched text" в sed)
+    local ESCAPED_URL; ESCAPED_URL=$(printf '%s' "$URL" | sed 's/[&\]/\\&/g')
     vm_exec "grep -q '^SHEET_CSV_URL=' /etc/proxyvethmp/env \
-        && sed -i 's|^SHEET_CSV_URL=.*|SHEET_CSV_URL=${URL}|' /etc/proxyvethmp/env \
+        && sed -i 's|^SHEET_CSV_URL=.*|SHEET_CSV_URL=${ESCAPED_URL}|' /etc/proxyvethmp/env \
         || echo 'SHEET_CSV_URL=${URL}' >> /etc/proxyvethmp/env"
     ok "URL сохранён"
     prompt "Запустить sync + up all? (yes/no)" "yes" _c
-    [[ "${_c:-}" == "yes" ]] && vm_exec "proxyveth sync && proxyveth up all" && ok "Sync + Up выполнены"
+    [[ "${_c:-}" == "yes" ]] && { vm_exec "proxyveth sync && proxyveth up all" && ok "Sync + Up выполнены" || warn "Ошибка sync"; }
 }
 
 do_change_vm_params() {
@@ -587,23 +594,23 @@ do_set_ssh() {
 # ══════════════════════════════════════════════════════════════════
 do_pvmp_status()     { need_ip; vm_exec "proxyveth status"       || warn "proxyveth не отвечает"; }
 do_pvmp_status_wan() { need_ip; vm_exec "proxyveth status --wan"  || warn "proxyveth не отвечает"; }
-do_pvmp_sync()       { need_ip; vm_exec "proxyveth sync && proxyveth up all" || warn "Ошибка sync"; ok "Sync + Up выполнены"; }
+do_pvmp_sync()       { need_ip; vm_exec "proxyveth sync && proxyveth up all" && ok "Sync + Up выполнены" || warn "Ошибка sync"; }
 
 do_pvmp_restart() {
     need_ip
     prompt "Номер NS или all" "all" TARGET
-    vm_exec "proxyveth restart ${TARGET}"; ok "Перезапущено: $TARGET"
+    vm_exec "proxyveth restart ${TARGET}" && ok "Перезапущено: $TARGET" || warn "Ошибка restart"
 }
 
 do_pvmp_check() {
     need_ip
     prompt "Номер NS" "" N; [[ -n "${N:-}" ]] || fail "Пусто"
-    vm_exec "proxyveth check ${N}"
+    vm_exec "proxyveth check ${N}" || warn "Ошибка check"
 }
 
 do_pvmp_logs() {
     need_ip; echo -e "\n  ${D}Ctrl+C для выхода${R}"
-    vm_exec "tail -f /etc/proxyvethmp/logs/watchdog.log"
+    vm_exec "tail -f /etc/proxyvethmp/logs/watchdog.log" || true
 }
 
 do_reboot_vm() {
