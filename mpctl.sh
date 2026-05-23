@@ -81,10 +81,10 @@ spinner_stop() {
 #  /etc/mpctl/vm_106.conf  — конфиг конкретной VM
 #  /etc/mpctl/active       — ID активной VM
 # ══════════════════════════════════════════════════════════════════
-VM_ID="" VM_NAME="proxyvethmp" VM_IP="" VM_BRIDGE="vmbr0"
+VM_ID="" VM_NAME="proxyvethmp" VM_IP="" VM_BRIDGE="vmbr0" VM_PASSWORD=""
 
 load_state() {
-    VM_ID="" VM_NAME="proxyvethmp" VM_IP="" VM_BRIDGE="vmbr0"
+    VM_ID="" VM_NAME="proxyvethmp" VM_IP="" VM_BRIDGE="vmbr0" VM_PASSWORD=""
     mkdir -p "$MPCTL_DIR"
     local active_id=""
     [[ -f "${MPCTL_DIR}/active" ]] && active_id=$(cat "${MPCTL_DIR}/active")
@@ -99,6 +99,7 @@ VM_ID=${VM_ID}
 VM_NAME=${VM_NAME:-proxyvethmp}
 VM_IP=${VM_IP:-}
 VM_BRIDGE=${VM_BRIDGE:-vmbr0}
+VM_PASSWORD=${VM_PASSWORD:-}
 EOF
     echo "$VM_ID" > "${MPCTL_DIR}/active"
 }
@@ -582,6 +583,8 @@ do_change_password() {
     vm_exec "echo 'root:${NEW_PASS}' | chpasswd"
     load_state
     [[ -n "${VM_ID:-}" ]] && qm set "$VM_ID" --cipassword "$NEW_PASS" 2>/dev/null || true
+    VM_PASSWORD="$NEW_PASS"
+    save_state
     ok "Пароль изменён"
 }
 
@@ -632,11 +635,13 @@ do_reboot_vm() {
 do_show_summary() {
     need_ip; load_state
     local wan; wan=$(vm_exec "curl -s --max-time 5 2ip.ru" 2>/dev/null || echo "—")
+    local pass_display="${VM_PASSWORD:-${RD}(не сохранён — смени через [2]→[4])${R}}"
     echo -e "\n  ${G}Сводка для ЛК mobileproxy.space:${R}"
     echo -e "  ${B}════════════════════════════════════════${R}"
     echo -e "  Статический IP : ${wan}"
     echo -e "  LocalIP        : ${VM_IP}"
     echo -e "  Root login     : root"
+    echo -e "  Root password  : ${pass_display}"
     echo -e "  OS             : Unix"
     echo -e "  ${B}════════════════════════════════════════${R}"
     echo -e "  Мой прокси-бизнес → Сервера → ✏ Редактировать\n"
