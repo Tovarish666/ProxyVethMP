@@ -289,7 +289,15 @@ do_install_vm() {
         ok "Старая VM удалена"
     fi
 
-    prompt "Имя VM"   "proxyvethmp" VM_NAME
+    # Proxmox принимает только DNS-совместимые имена: буквы/цифры/дефис,
+    # начинается с буквы или цифры, не заканчивается на дефис.
+    while true; do
+        prompt "Имя VM (буквы/цифры/дефис, напр. proxyvethmp)" "proxyvethmp" VM_NAME
+        if [[ "$VM_NAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?$ ]]; then
+            break
+        fi
+        warn "Недопустимое имя «${VM_NAME}» — только латинские буквы, цифры и дефис (не начинается и не заканчивается на дефис)"
+    done
     prompt "RAM, MB"  "8192"        VM_RAM
     prompt "CPU ядра" "8"           VM_CORES
     prompt "Диск, GB" "50"          VM_DISK
@@ -316,7 +324,8 @@ do_install_vm() {
         --name    "$VM_NAME"  --memory "$VM_RAM"   --cores "$VM_CORES" \
         --cpu     host        --net0   "virtio,bridge=${VM_BRIDGE}" \
         --ostype  l26         --machine q35         --scsihw virtio-scsi-pci \
-        --serial0 socket      --onboot 1
+        --serial0 socket      --onboot 1 \
+        || { warn "qm create завершился с ошибкой (см. выше). Установка прервана."; return 1; }
     ok "VM создана (ID=${VM_ID})"
 
     step "Импорт диска..."
