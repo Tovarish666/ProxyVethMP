@@ -29,6 +29,8 @@ CURL_TIMEOUT    = 10
 WATCHDOG_INTERVAL    = int(os.getenv("WATCHDOG_INTERVAL",    "60"))
 WATCHDOG_WAN_EVERY   = int(os.getenv("WATCHDOG_WAN_EVERY",   "10"))
 WATCHDOG_MAX_RESTART = int(os.getenv("WATCHDOG_MAX_RESTART", "3"))
+YASPEED_BIN          = "/usr/local/bin/yaspeed"
+YASPEED_URL          = os.getenv("YASPEED_URL", "")   # URL бинаря; пусто → curl-fallback
 
 R="\033[0m"; G="\033[32m"; RD="\033[31m"; Y="\033[33m"; C="\033[36m"; B="\033[1m"; D="\033[2m"
 def log_ok(m):   print(f"  {G}✓{R} {m}")
@@ -56,6 +58,62 @@ def run(cmd, ns=None, check=True, capture=True, quiet=False):
     return r
 
 def run_safe(cmd, **kw): return run(cmd, check=False, **kw)
+
+# ── Speed test ────────────────────────────────────────────────────
+def _ensure_yaspeed():
+    if Path(YASPEED_BIN).exists(): return True
+    if not YASPEED_URL: return False
+    log_step("Устанавливаем yaspeed...")
+    r = run_safe(f"wget -q --timeout=20 -O {YASPEED_BIN} '{YASPEED_URL}'", capture=True)
+    if r.returncode != 0:
+        Path(YASPEED_BIN).unlink(missing_ok=True)
+        log_warn("Не удалось установить yaspeed"); return False
+    run(f"chmod +x {YASPEED_BIN}", capture=True); return True
+
+def _speed_test_ns(n):
+    """Download speed + ping через namespace ns_n. Возвращает (dl_str, ping_str)."""
+    import re
+    dl = ping = "—"
+
+    # ── yaspeed (если есть) ──────────────────────────────────────
+    if Path(YASPEED_BIN).exists():
+        r = run_safe(f"ip netns exec ns_{n} timeout 40 {YASPEED_BIN}",
+                     capture=True, quiet=True)
+        out = r.stdout.strip() if r.returncode == 0 else ""
+        if out:
+            try:
+                import json as _j; d = _j.loads(out)
+                sp = d.get("download", d.get("dl", d.get("downloadBandwidth", 0)))
+                if sp > 1e4: sp /= 1e6           # bps → Mbit/s
+                pg = d.get("ping", {}); pg = pg.get("latency", 0) if isinstance(pg, dict) else pg
+                return f"{sp:.1f} Mb/s", f"{int(pg)} ms"
+            except: pass
+            for line in out.splitlines():
+                lc = line.lower()
+                if dl   == "—" and any(k in lc for k in ("download","скачив","↓","загрузк")):
+                    m = re.search(r"([\d.]+)", line)
+                    if m: dl   = f"{float(m.group(1)):.1f} Mb/s"
+                if ping == "—" and any(k in lc for k in ("ping","задерж","latency")):
+                    m = re.search(r"([\d.]+)", line)
+                    if m: ping = f"{int(float(m.group(1)))} ms"
+            if dl != "—" or ping != "—": return dl, ping
+
+    # ── Fallback: ping 8.8.8.8 + curl Cloudflare ─────────────────
+    r_p = run_safe(f"ip netns exec ns_{n} ping -c 3 -q 8.8.8.8", capture=True, quiet=True)
+    if r_p.returncode == 0:
+        m = re.search(r"avg[^=]*=\s*[\d.]+/([\d.]+)/", r_p.stdout)
+        if m: ping = f"{int(float(m.group(1)))} ms"
+    r_d = run_safe(
+        f"ip netns exec ns_{n} curl -s --max-time 15 "
+        f"-o /dev/null -w '%{{speed_download}}' "
+        f"'https://speed.cloudflare.com/__down?bytes=5000000'",
+        capture=True, quiet=True)
+    if r_d.returncode == 0:
+        try:
+            sp = float(r_d.stdout.strip())
+            if sp > 0: dl = f"{sp/1e6:.1f} Mb/s"
+        except: pass
+    return dl, ping
 
 def is_ns_exists(n):
     r=run_safe("ip netns list", capture=True)
@@ -329,9 +387,10 @@ def cmd_watchdog_loop():
             time.sleep(1)
     wlog("ProxyVethMP WATCHDOG STOPPED")
 
-def cmd_status(check_wan=False):
+def cmd_status():
+    """Таблица NS + WAN IP (всегда с wan)."""
     header("STATUS"); config=load_config(); modems=config.get("modems",{}); active_ns=set(get_active_ns_list())
-    print(f"\n  {'N':>3} │ {'Proxy':^28} │ {'NS':^6} │ {'tun':^5}{'  WAN IP' if check_wan else ''}")
+    print(f"\n  {'N':>3} │ {'Proxy':^28} │ {'NS':^6} │ {'tun':^5}  WAN IP")
     print(f"  {'─'*3}─┼─{'─'*28}─┼─{'─'*6}─┼─{'─'*5}")
     up=down=disabled=0
     for n_str in sorted(modems,key=lambda x:int(x)):
@@ -339,28 +398,46 @@ def cmd_status(check_wan=False):
         if not en: disabled+=1; print(f"  {n:>3} │ {ps:<28} │ {D}{'—':^6}{R} │ {D}{'—':^5}{R}"); continue
         if n in active_ns:
             up+=1; ns_m=f"{G}{'UP':^6}{R}"; t=is_process_running(f"tun2socks.*tun{n}"); tm=f"{G}{'✓':^5}{R}" if t else f"{RD}{'✗':^5}{R}"
-            w=""
-            if check_wan:
-                wr=run_safe(f"curl -s --max-time {CURL_TIMEOUT} --interface 192.168.{n}.100 2ip.ru", capture=True, quiet=True)
-                w=f"  {wr.stdout.strip() if wr.returncode==0 else '—'}"
+            wr=run_safe(f"curl -s --max-time {CURL_TIMEOUT} --interface 192.168.{n}.100 2ip.ru",capture=True,quiet=True)
+            w=f"  {wr.stdout.strip() if wr.returncode==0 else '—'}"
         else: down+=1; ns_m=f"{RD}{'DOWN':^6}{R}"; tm=f"{D}{'—':^5}{R}"; w=""
         print(f"  {n:>3} │ {ps:<28} │ {ns_m} │ {tm}{w}")
     print(); log_info(f"UP:{up} DOWN:{down} Disabled:{disabled} Total:{len(modems)}")
     if config.get("last_sync"): log_info(f"Sync: {config['last_sync']}")
 
-def cmd_check(target):
-    n=int(target); header(f"CHECK ns_{n}")
-    if not is_ns_exists(n): log_fail(f"ns_{n} не существует"); return
-    r=run_safe(f"curl -s --max-time {CURL_TIMEOUT} --interface 192.168.{n}.100 2ip.ru", capture=True, quiet=True)
-    (log_ok if r.returncode==0 and r.stdout.strip() else log_fail)(f"WAN IP (хост):  {r.stdout.strip() or 'недоступен'}")
-    r=run_safe(f"curl -s --max-time {CURL_TIMEOUT} 2ip.ru", ns=n, capture=True, quiet=True)
-    (log_ok if r.returncode==0 and r.stdout.strip() else log_fail)(f"WAN IP (ns):    {r.stdout.strip() or 'недоступен'}")
-    r=run_safe(f"curl -s --max-time 5 --interface 192.168.{n}.100 http://192.168.{n}.1/api/webserver/SesTokInfo", capture=True, quiet=True)
-    (log_ok if "SesInfo" in r.stdout else log_fail)(f"Huawei API .1:  {'OK' if 'SesInfo' in r.stdout else 'недоступен'}")
-    t=is_process_running(f"tun2socks.*tun{n}")
-    (log_ok if t else log_fail)(f"tun2socks:      {'OK' if t else 'DEAD'}")
-    log_step("Маршруты в ns:")
-    for line in run_safe("ip route",ns=n,capture=True).stdout.strip().split("\n"): print(f"    {D}{line}{R}")
+def cmd_check():
+    """Комплексная диагностика: скорость + ping + 2ip ✓/✗ для всех активных NS."""
+    header("CHECK")
+    config=load_config(); modems=config.get("modems",{}); active_ns=set(get_active_ns_list())
+    _ensure_yaspeed()
+    src = "yaspeed" if Path(YASPEED_BIN).exists() else "curl+ping"
+    print(f"\n  {D}Источник скорости: {src}{R}")
+    print(f"\n  {'N':>3} │ {'Proxy':<22} │ {'DL':^10} │ {'Ping':^6} │ 2ip │ Статус")
+    print(f"  {'─'*3}─┼─{'─'*22}─┼─{'─'*10}─┼─{'─'*6}─┼─{'─'*3}─┼─{'─'*8}")
+    ok=wl=dead=0
+    for n_str in sorted(modems, key=lambda x: int(x)):
+        n=int(n_str); m=modems[n_str]; en=m.get("enabled",True)
+        ps=f"{m['proxy_host']}:{m['proxy_port']}"
+        if not en:
+            print(f"  {n:>3} │ {D}{ps:<22}{R} │ {'—':^10} │ {'—':^6} │  —  │ {D}off{R}"); continue
+        if n not in active_ns:
+            dead+=1
+            print(f"  {n:>3} │ {ps:<22} │ {'—':^10} │ {'—':^6} │  —  │ {RD}DEAD{R}"); continue
+        # 2ip ✓/✗ — через хост-интерфейс veth
+        r2=run_safe(f"curl -s --max-time 8 --interface 192.168.{n}.100 2ip.ru",capture=True,quiet=True)
+        ip_ok=r2.returncode==0 and bool(r2.stdout.strip())
+        # Speed test через namespace (tun2socks → SOCKS5 → мобильный инет)
+        dl,ping=_speed_test_ns(n)
+        ysp_ok=dl!="—"
+        # Диагноз
+        if not ip_ok and not ysp_ok: diag=f"{RD}{'DEAD':<8}{R}"; dead+=1
+        elif not ip_ok:              diag=f"{Y}{'WLIST':<8}{R}"; wl+=1
+        else:                        diag=f"{G}{'OK':<8}{R}";    ok+=1
+        ic=G if ip_ok else RD; im="✓" if ip_ok else "✗"
+        print(f"  {n:>3} │ {ps:<22} │ {dl:^10} │ {ping:^6} │ {ic}{im:^3}{R} │ {diag}")
+    print()
+    log_info(f"OK:{ok}  WLIST:{wl}  DEAD:{dead}  Active NS:{len(active_ns)}")
+    if config.get("last_sync"): log_info(f"Sync: {config['last_sync']}")
 
 def cmd_up(target):
     config=load_config(); cmd_init()
@@ -490,13 +567,16 @@ def cmd_setup():
 
 USAGE=f"""{B}ProxyVethMP v1.0{R}
 Команды: sync / autosync / init / up [N|all] / down [N|all]
-         restart [N|all] / status [--wan] / check N
-         watchdog / watchdog-loop / cleanup / show-config"""
+         restart [N|all] / status / check
+         watchdog / watchdog-loop / cleanup / show-config
+
+  status  — таблица NS + WAN IP
+  check   — диагностика: скорость + ping + 2ip ✓/✗ (WLIST/DEAD/OK)"""
 
 def main():
     _load_env_file()
     if len(sys.argv)<2: cmd_setup(); return
-    cmd=sys.argv[1].lower().replace("-","_"); arg=sys.argv[2] if len(sys.argv)>2 else None; flags=sys.argv[2:]
+    cmd=sys.argv[1].lower().replace("-","_"); arg=sys.argv[2] if len(sys.argv)>2 else None
     dispatch={"setup":cmd_setup,"install":cmd_install,"init":cmd_init,"sync":do_sync,
               "autosync":cmd_autosync,"watchdog":cmd_watchdog,"watchdog_loop":cmd_watchdog_loop,
               "cleanup":cmd_cleanup,"show_config":cmd_show_config}
@@ -511,10 +591,8 @@ def main():
         elif cmd=="restart":
             if not arg: log_fail("proxyveth restart [N|all]"); sys.exit(1)
             cmd_restart(arg)
-        elif cmd=="status": cmd_status(check_wan="--wan" in flags)
-        elif cmd=="check":
-            if not arg: log_fail("proxyveth check N"); sys.exit(1)
-            cmd_check(arg)
+        elif cmd=="status": cmd_status()   # всегда с WAN
+        elif cmd=="check":  cmd_check()    # скорость + 2ip + диагноз
         else: log_fail(f"Неизвестная команда: {cmd}"); print(USAGE); sys.exit(1)
     except KeyboardInterrupt: print(f"\n{Y}Прервано{R}"); sys.exit(130)
     except SystemExit: raise

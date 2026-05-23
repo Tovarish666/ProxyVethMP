@@ -1,293 +1,130 @@
-# ProxyVethMP
+# mpctl — Mobile Proxy Control
 
-Конвертация SOCKS5 прокси в виртуальные сетевые интерфейсы для [mobileproxy.space](https://mobileproxy.space).
+Управление mobile proxy инфраструктурой на Proxmox VE.
+Три компонента, один инструмент.
 
-Модификация [ProxyVeth](https://github.com/Tovarish666/ProxyVeth) под работу совместно с mp.space на одной VM — без дополнительных контейнеров и без ограничения в 31 мост Proxmox.
+## Стек
 
----
+| # | Компонент | Что делает |
+|---|-----------|-----------|
+| 1 | **Ubuntu VM** | Гостевая ВМ (cloud-init, SSH, DHCP) |
+| 2 | **mobileproxy.space** | mproxy + nodejs-server — основной прокси-демон |
+| 3 | **ProxyVethMP** | SOCKS5 → veth-пара → mproxy (source routing) |
 
-## Как это работает
+### Как работает ProxyVethMP
 
-Каждый SOCKS5 прокси (реальный мобильный модем на мини-сервере) превращается в виртуальный сетевой интерфейс, который mp.space видит как настоящий HiLink модем.
+Каждый модем получает изолированный network namespace с TUN-интерфейсом:
 
 ```
-Мини-серверы (5 шт × 20 модемов)
-  └── 3proxy → 100 SOCKS5 портов (gen1)
-        │
-        ▼
-  Ubuntu VM (Proxmox)
-  ├── ProxyVethMP
-  │     Для каждого модема N:
-  │     ┌─ network namespace ns_N ──────────────┐
-  │     │  tun2socks → SOCKS5 → реальный модем  │
-  │     │  192.168.N.1 ← Huawei API (через tun) │
-  │     └───────────────────────────────────────┘
-  │           ↕ veth пара (без ограничения Proxmox)
-  │     veth_extN_host = 192.168.N.100/24
-  │
-  └── mobileproxy.space
-        source-based routing (table 100+N)
-        mp.space видит: 192.168.N.100 = модем N
-        Huawei API: http://192.168.N.1 — работает ✓
+SOCKS5 (модем N)
+      │
+  tun2socks
+      │
+    tun{N}  ←── ns_{N} ──── veth_ext{N}_ns ──── 192.168.N.254
+                                                       │
+              HOST ──── veth_ext{N}_host ──── 192.168.N.100
+                                                       │
+                                                   mproxy
+                                              (source routing)
 ```
 
-**IP схема для каждого модема N:**
+mproxy отправляет трафик через `192.168.N.100` → veth → namespace → tun2socks → реальный SOCKS5 (мобильный модем).
 
-| Адрес | Роль |
-|---|---|
-| `192.168.N.100` | Хост — mp.space видит как IP модема |
-| `192.168.N.254` | Namespace — шлюз для хоста |
-| `192.168.N.1` | Huawei web API (через tun → SOCKS5) |
-| `10.0.N.1/30` | tun интерфейс внутри namespace |
-
-**Ключевое правило mp.space (железное):** если IP модема `192.168.N.100`, то адрес управления `192.168.N.1`. Поэтому номер модема в таблице `n` — это реальный номер (1–200), не порядковый.
-
----
-
-## Отличия от оригинального ProxyVeth
-
-| | ProxyVeth | ProxyVethMP |
-|---|---|---|
-| Назначение | SOCKS5 → Windows VM | SOCKS5 → mp.space |
-| eth1 / VLAN | ✓ (trunk к Windows) | ✗ не нужен |
-| br\_mgmt bridge | ✓ | ✗ не нужен |
-| dnsmasq | ✓ (DHCP для Windows) | ✗ не нужен |
-| veth к хосту | ✗ | ✓ veth\_extN\_host |
-| DNS через хост | ✗ | ✓ bypass tun (иначе петля) |
-| UDP DROP на tun | ✓ | ✓ критично: защищает 3proxy |
-| Source routing | ✗ | ✓ table 100+N |
-| Ограничение мостов | 31 (Proxmox net0–net31) | без ограничений |
-| Отдельный LXC | ✓ | ✗ та же VM что mp.space |
-
----
-
-## Быстрый деплой
-
-На хосте Proxmox:
+## Быстрый старт
 
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/Tovarish666/ProxyVethMP/main/deploy.sh)
+# На хосте Proxmox, от root:
+bash <(curl -s https://raw.githubusercontent.com/Tovarish666/ProxyVethMP/main/mpctl.sh)
 ```
 
-Скрипт задаст вопросы и за ~20 минут:
-1. Создаст Ubuntu 24.04 VM через cloud-init
-2. Установит mp.space (install.sh + setup-modem-management.sh)
-3. Запишет auth.mp
-4. Установит ProxyVethMP
-5. Поднимет все NS из Google Sheets
-6. Настроит systemd (автостарт + watchdog + autosync)
+Меню само предложит что установить — VM, ProxyVethMP, mp.space, или всё сразу.
 
-После деплоя — настроить сервер в ЛК mobileproxy.space (см. ниже).
+## Команды proxyveth (внутри VM)
 
----
+| Команда | Описание |
+|---------|----------|
+| `proxyveth status` | Таблица NS + WAN IP каждого модема |
+| `proxyveth check` | Диагностика: скорость + ping + 2ip |
+| `proxyveth up [N\|all]` | Поднять namespace(ы) |
+| `proxyveth down [N\|all]` | Опустить namespace(ы) |
+| `proxyveth restart [N\|all]` | Перезапустить |
+| `proxyveth sync` | Синхронизировать конфиг из Google Sheets |
+| `proxyveth autosync` | Sync с применением diff (добавить/удалить/перезапустить) |
+| `proxyveth watchdog` | Разовая проверка watchdog |
+| `proxyveth watchdog-loop` | Watchdog-демон (бесконечный цикл) |
+| `proxyveth show-config` | Показать конфиг модемов |
+| `proxyveth cleanup` | Полная очистка (NS, iptables, veth) |
 
-## Установка вручную
-
-### Требования
-
-- Proxmox 7+ на хосте
-- Ubuntu 24.04 VM (8GB RAM, 8 CPU, 50GB диск)
-- mp.space аккаунт с сервером
-- Google Sheets с列ком прокси (публичный CSV)
-
-### 1. mp.space
-
-```bash
-# Внутри Ubuntu VM:
-wget -O - https://mobileproxy.space/downloads/sp/install.sh | bash
-wget -O - https://mobileproxy.space/downloads/sp/setup-modem-management.sh | bash
-
-# Записать реальный auth.mp (скачать на сайте mp.space)
-echo '{"auth":"KEY:KEY","port":1800}' > /home/nodejs/work/auth.mp
-
-reboot
-```
-
-### 2. ProxyVethMP
-
-```bash
-wget -O /usr/local/bin/proxyveth_mp.py \
-  https://raw.githubusercontent.com/Tovarish666/ProxyVethMP/main/proxyveth_mp.py
-chmod +x /usr/local/bin/proxyveth_mp.py
-ln -sf /usr/local/bin/proxyveth_mp.py /usr/local/bin/proxyveth
-
-# Сохранить URL таблицы
-mkdir -p /etc/proxyvethmp
-echo 'SHEET_CSV_URL=https://docs.google.com/...' > /etc/proxyvethmp/env
-
-# Установить зависимости, синхронизировать, запустить
-proxyveth install
-proxyveth sync
-proxyveth up all
-```
-
-### 3. Настройка в ЛК mobileproxy.space
+### `proxyveth check` — диагностика
 
 ```
-Мой прокси-бизнес → Сервера → ✏ Редактировать
-
-  Статический IP : (curl -s 2ip.ru)
-  LocalIP        : (hostname -I | awk '{print $1}')
-  Root login     : root
-  Пароль Root    : ****
-  OS             : Unix
+  N  │  Proxy              │  DL       │  Ping  │ 2ip │ Статус
+  ───┼─────────────────────┼───────────┼────────┼─────┼────────
+   1 │ 1.2.3.4:1080        │ 15.2 Mb/s │  45ms  │  ✓  │ OK
+   2 │ 1.2.3.5:1080        │ 12.8 Mb/s │  67ms  │  ✗  │ WLIST
+   3 │ 1.2.3.6:1080        │    —      │   —    │  —  │ DEAD
 ```
 
-После сохранения нажать на домен сервера → обновление конфига.
+| Статус | Значение |
+|--------|----------|
+| **OK** | Всё работает |
+| **WLIST** | Белый список: скорость есть, 2ip.ru заблокирован |
+| **DEAD** | Модем не отвечает |
 
----
+Скорость измеряется через yaspeed (если установлен через `YASPEED_URL`) или curl + ping как fallback.
 
 ## Формат Google Sheets
 
-Таблица должна быть опубликована (Файл → Опубликовать → CSV).
+Два поддерживаемых формата:
 
-**Вариант A — одна колонка proxy:**
+**Компактный** (один столбец proxy):
 
 | n | proxy |
-|---|---|
-| 41 | 95.165.86.25:12001:login:password |
-| 42 | 95.165.86.25:12004:login:password |
+|---|-------|
+| 1 | host:port:login:password |
 
-**Вариант B — раздельные колонки:**
+**Раздельный**:
 
-| n | proxy\_host | proxy\_port | login | password |
-|---|---|---|---|---|
-| 41 | 95.165.86.25 | 12001 | login | password |
+| n | proxy_host | proxy_port | login | password |
+|---|-----------|-----------|-------|---------|
 
-Дополнительная колонка `enabled` (0/1) — для отключения отдельных модемов.
+URL для mpctl: `https://...pub?gid=XXXX&single=true&output=csv`
 
----
-
-## Команды
-
-```bash
-proxyveth status              # статус всех namespace
-proxyveth status --wan        # + проверка WAN IP (медленно)
-proxyveth check N             # полная диагностика одного NS
-proxyveth up N                # поднять namespace N
-proxyveth up all              # поднять все
-proxyveth down N              # остановить namespace N
-proxyveth down all            # остановить все
-proxyveth restart N           # перезапустить namespace N
-proxyveth restart all         # перезапустить все
-proxyveth sync                # обновить конфиг из Google Sheets
-proxyveth autosync            # sync + пересоздать изменённые NS
-proxyveth show-config         # показать текущий конфиг
-proxyveth watchdog            # один проход мониторинга
-proxyveth cleanup             # полная очистка (осторожно)
-```
-
----
-
-## Systemd сервисы
-
-| Сервис | Роль |
-|---|---|
-| `proxyvethmp` | запуск всех NS при загрузке VM |
-| `proxyvethmp-watchdog` | мониторинг каждые 60с, рестарт при падении |
-| `proxyvethmp-autosync.timer` | синхронизация таблицы каждые 5 мин |
-
-```bash
-systemctl status proxyvethmp
-systemctl status proxyvethmp-watchdog
-journalctl -u proxyvethmp-watchdog -f
-tail -f /etc/proxyvethmp/logs/watchdog.log
-```
-
----
-
-## Ручная настройка одного модема
-
-Для отладки или первого запуска без скрипта:
-
-```bash
-N=60
-PROXY="socks5://login:password@host:port"
-ETH_WAN="eth0"
-RT_TABLE=$((100 + N))
-
-# Namespace + DNS
-ip netns add ns_${N}
-ip netns exec ns_${N} ip link set lo up
-mkdir -p /etc/netns/ns_${N}
-echo "nameserver 8.8.8.8" > /etc/netns/ns_${N}/resolv.conf
-
-# veth пара
-ip link add veth_ext${N}_host type veth peer name veth_ext${N}_ns
-ip link set veth_ext${N}_ns netns ns_${N}
-ip addr add 192.168.${N}.100/24 dev veth_ext${N}_host
-ip link set veth_ext${N}_host up
-ip netns exec ns_${N} ip addr add 192.168.${N}.254/24 dev veth_ext${N}_ns
-ip netns exec ns_${N} ip link set veth_ext${N}_ns up
-
-# tun2socks
-ip netns exec ns_${N} tun2socks -device tun${N} -proxy ${PROXY} -loglevel silent &
-sleep 3
-ip netns exec ns_${N} ip addr add 10.0.${N}.1/30 dev tun${N}
-ip netns exec ns_${N} ip link set tun${N} up
-
-# Маршруты внутри ns
-ip netns exec ns_${N} ip route add default dev tun${N}
-ip netns exec ns_${N} ip route add 192.168.${N}.1/32 dev tun${N}  # Huawei API
-ip netns exec ns_${N} ip route add PROXY_HOST/32 via 192.168.${N}.100  # bypass tun!
-ip netns exec ns_${N} ip route add 8.8.8.8/32 via 192.168.${N}.100    # DNS bypass tun!
-ip netns exec ns_${N} ip route add 8.8.4.4/32 via 192.168.${N}.100
-
-# iptables — UDP DROP критичен: без него mproxy флудит 3proxy через tun
-ip netns exec ns_${N} iptables -A OUTPUT  -o tun${N} -p udp -j DROP
-ip netns exec ns_${N} iptables -A FORWARD -o tun${N} -p udp -j DROP
-ip netns exec ns_${N} sysctl -w net.ipv4.ip_forward=1
-ip netns exec ns_${N} iptables -t nat -A POSTROUTING -o tun${N} -j MASQUERADE
-ip netns exec ns_${N} iptables -A FORWARD -i veth_ext${N}_ns -o tun${N} -j ACCEPT
-ip netns exec ns_${N} iptables -A FORWARD -i tun${N} -o veth_ext${N}_ns -j ACCEPT
-
-# Хост: NAT + source routing
-sysctl -w net.ipv4.ip_forward=1
-iptables -t nat -A POSTROUTING -s 192.168.${N}.0/24 -o ${ETH_WAN} -j MASQUERADE
-ip rule add from 192.168.${N}.100 table ${RT_TABLE}
-ip route add default via 192.168.${N}.254 dev veth_ext${N}_host table ${RT_TABLE}
-
-# Проверка
-curl --interface 192.168.${N}.100 -s 2ip.ru                                      # WAN IP модема
-curl --interface 192.168.${N}.100 -s http://192.168.${N}.1/api/webserver/SesTokInfo  # Huawei API
-```
-
----
-
-## Важные нюансы
-
-**DNS и SOCKS5 обязаны обходить tun:**
-tun2socks сам использует SOCKS5 для исходящих соединений. Если DNS (8.8.8.8) и адрес SOCKS5 прокси идут через tun → они попадают обратно в tun2socks → бесконечная петля. Маршруты через хост (`via 192.168.N.100`) решают проблему.
-
-**UDP DROP на tun:**
-mproxy на хосте биндится на все интерфейсы включая `veth_extN_host`. Его UDP трафик попадает в namespace через source routing и заваливает 3proxy на мини-серверах тысячами пакетов в секунду. Блок UDP на tun устраняет проблему.
-
-**N = реальный номер модема:**
-Номер строки в таблице не равен N. N определяет IP: `192.168.N.100`. mp.space управляет модемом по адресу `192.168.N.1` — это жёсткое правило, которое нельзя обойти.
-
----
-
-## Файлы
+## Файловая структура
 
 ```
-/usr/local/bin/proxyveth_mp.py    основной скрипт
-/usr/local/bin/proxyveth          symlink → proxyveth_mp.py
-/etc/proxyvethmp/config.json      конфиг модемов (из Google Sheets)
-/etc/proxyvethmp/env              переменные окружения (SHEET_CSV_URL)
-/etc/proxyvethmp/logs/            логи watchdog
-/etc/netns/ns_N/resolv.conf       DNS для каждого namespace
+/etc/proxyvethmp/
+├── config.json          # конфиг модемов (из Google Sheets)
+├── env                  # переменные окружения
+└── logs/
+    └── watchdog.log
+
+/usr/local/bin/
+├── proxyveth_mp.py      # основной Python-скрипт
+├── proxyveth -> ...     # симлинк
+└── tun2socks            # бинарь tun2socks v2.5.2
+
+/etc/systemd/system/
+├── proxyvethmp.service           # up all при старте системы
+├── proxyvethmp-watchdog.service  # watchdog-демон
+├── proxyvethmp-autosync.service  # разовый sync
+└── proxyvethmp-autosync.timer    # sync каждые 5 минут
 ```
 
----
+## Переменные окружения (`/etc/proxyvethmp/env`)
 
-## Зависимости
+| Переменная | Описание | Дефолт |
+|------------|----------|--------|
+| `SHEET_CSV_URL` | URL CSV-экспорта Google Sheets | — |
+| `SHEET_ID` + `SHEET_GID` | ID таблицы + ID листа (альтернатива URL) | — |
+| `YASPEED_URL` | URL бинаря yaspeed для `proxyveth check` | — |
+| `WATCHDOG_INTERVAL` | Интервал watchdog (сек) | 60 |
+| `WATCHDOG_WAN_EVERY` | WAN-проверка каждые N итераций | 10 |
+| `WATCHDOG_MAX_RESTART` | Макс. перезапусков на модем | 3 |
 
-- `tun2socks` v2.5.2 (устанавливается автоматически)
-- `python3`, `iproute2`, `iptables`, `curl`
-- mobileproxy.space: `install.sh` + `setup-modem-management.sh`
+## Требования
 
----
-
-## Лицензия
-
-MIT
+- Proxmox VE 7+
+- Python 3.10+
+- tun2socks — скачивается автоматически при установке
+- Ubuntu 24.04 cloud image — скачивается автоматически

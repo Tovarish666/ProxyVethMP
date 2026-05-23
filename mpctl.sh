@@ -585,20 +585,14 @@ do_set_ssh() {
 # ══════════════════════════════════════════════════════════════════
 #  MANAGE
 # ══════════════════════════════════════════════════════════════════
-do_pvmp_status()     { need_ip; vm_exec "proxyveth status"       || warn "proxyveth не отвечает"; }
-do_pvmp_status_wan() { need_ip; vm_exec "proxyveth status --wan"  || warn "proxyveth не отвечает"; }
-do_pvmp_sync()       { need_ip; vm_exec "proxyveth sync && proxyveth up all" || warn "Ошибка sync"; ok "Sync + Up выполнены"; }
+do_pvmp_status()  { need_ip; vm_exec "proxyveth status" || warn "proxyveth не отвечает"; }
+do_pvmp_check()   { need_ip; vm_exec "proxyveth check"  || warn "proxyveth не отвечает"; }
+do_pvmp_sync()    { need_ip; vm_exec "proxyveth sync && proxyveth up all" || warn "Ошибка sync"; ok "Sync + Up выполнены"; }
 
 do_pvmp_restart() {
     need_ip
     prompt "Номер NS или all" "all" TARGET
     vm_exec "proxyveth restart ${TARGET}"; ok "Перезапущено: $TARGET"
-}
-
-do_pvmp_check() {
-    need_ip
-    prompt "Номер NS" "" N; [[ -n "${N:-}" ]] || fail "Пусто"
-    vm_exec "proxyveth check ${N}"
 }
 
 do_pvmp_logs() {
@@ -729,14 +723,13 @@ menu_manage() {
         echo -e "\n${B}  Управление${R}  ${D}(VM: ${VM_ID:-?} @ ${VM_IP:-?})${R}"
         echo -e "  ${D}──────────────────────────────────────────${R}"
         echo "  [1] Dashboard"
-        echo "  [2] proxyveth status"
-        echo "  [3] proxyveth status --wan"
+        echo "  [2] proxyveth status   (NS + WAN IP)"
+        echo "  [3] proxyveth check    (скорость + ping + 2ip)"
         echo "  [4] proxyveth sync + up all"
-        echo "  [5] proxyveth restart"
-        echo "  [6] proxyveth check N"
-        echo "  [7] Логи watchdog"
-        echo "  [8] Сводка для ЛК mp.space"
-        echo "  [9] Ребут VM"
+        echo "  [5] proxyveth restart  [N|all]"
+        echo "  [6] Логи watchdog"
+        echo "  [7] Сводка для ЛК mp.space"
+        echo "  [8] Ребут VM"
         echo "  [d] Удалить VM"
         echo "  [u] Обновить mpctl"
         echo "  [0] ← Назад"
@@ -745,13 +738,12 @@ menu_manage() {
         case ${CHOICE:-} in
             1) show_dashboard ;;
             2) do_pvmp_status ;;
-            3) do_pvmp_status_wan ;;
+            3) do_pvmp_check ;;
             4) do_pvmp_sync ;;
             5) do_pvmp_restart ;;
-            6) do_pvmp_check ;;
-            7) do_pvmp_logs ;;
-            8) do_show_summary ;;
-            9) do_reboot_vm ;;
+            6) do_pvmp_logs ;;
+            7) do_show_summary ;;
+            8) do_reboot_vm ;;
             d|D) do_destroy_vm ;;
             u|U) do_selfupdate ;;
             0) return ;;
