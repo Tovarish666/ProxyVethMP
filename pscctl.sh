@@ -1,22 +1,22 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-#  mpctl — Mobile Proxy Control  v1.1
+#  pscctl — Proxy Control Service  v1.2
 #  https://github.com/Tovarish666/ProxyVethMP
 #
-#  Запуск: bash <(curl -s https://raw.githubusercontent.com/Tovarish666/ProxyVethMP/main/mpctl.sh)
+#  Запуск: bash <(curl -s https://raw.githubusercontent.com/Tovarish666/ProxyVethMP/main/pscctl.sh)
 # ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
-VERSION="1.1"
+VERSION="1.2"
 GITHUB_RAW="https://raw.githubusercontent.com/Tovarish666/ProxyVethMP/main"
-PROXYVETHMP_URL="${GITHUB_RAW}/proxyveth_mp.py"
-SELF_URL="${GITHUB_RAW}/mpctl.sh"
+PSC_URL="${GITHUB_RAW}/psc.py"
+SELF_URL="${GITHUB_RAW}/pscctl.sh"
 
 UBUNTU_IMG_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
 UBUNTU_SHA256_URL="https://cloud-images.ubuntu.com/noble/current/SHA256SUMS"
 UBUNTU_IMG_PATH="/var/lib/vz/template/iso/ubuntu-24.04-noble.img"
 
-MPCTL_DIR="/etc/mpctl"
+PSC_DIR="/etc/psc"
 
 # ── Цвета ───────────────────────────────────────────────────────
 R="\033[0m"; G="\033[32m"; RD="\033[31m"; Y="\033[33m"
@@ -29,8 +29,6 @@ step() { echo -e "  ${D}→${R} $*"; }
 hdr()  { echo -e "\n${B}══════════════════════════════════════════\n  $*\n══════════════════════════════════════════${R}"; }
 
 # ── Ввод ─────────────────────────────────────────────────────────
-# Enter на пустом поле = дефолт. Backspace работает нормально.
-# prompt "Метка" "дефолт" VARNAME
 prompt() {
     local label="$1" default="${2:-}" varname="$3" reply=""
     if [[ -n "$default" ]]; then
@@ -45,19 +43,17 @@ prompt() {
         printf -v "$varname" '%s' "$default"
     fi
 }
-# Пароль (без эха)
 prompt_pass() {
     local label="$1" varname="$2" reply=""
     echo -ne "  ${C}?${R} ${label}: "
     read -rs reply </dev/tty || true; echo ""
     printf -v "$varname" '%s' "$reply"
 }
-# Выбор из меню
 prompt_choice() {
     echo -ne "  ${C}»${R} Выбор: "
     CHOICE=""
     read -r CHOICE </dev/tty || true
-    CHOICE="${CHOICE//[[:space:]]/}"  # убираем пробелы/пробел до и после
+    CHOICE="${CHOICE//[[:space:]]/}"
 }
 
 # ── Spinner ──────────────────────────────────────────────────────
@@ -78,38 +74,35 @@ spinner_stop() {
 
 # ══════════════════════════════════════════════════════════════════
 #  MULTI-VM STATE
-#  /etc/mpctl/vm_106.conf  — конфиг конкретной VM
-#  /etc/mpctl/active       — ID активной VM
+#  /etc/psc/vm_106.conf  — конфиг конкретной VM
+#  /etc/psc/active       — ID активной VM
 # ══════════════════════════════════════════════════════════════════
-VM_ID="" VM_NAME="proxyvethmp" VM_IP="" VM_BRIDGE="vmbr0" VM_PASSWORD=""
+VM_ID="" VM_NAME="psc" VM_IP="" VM_BRIDGE="vmbr0" VM_PASSWORD=""
 
 load_state() {
-    VM_ID="" VM_NAME="proxyvethmp" VM_IP="" VM_BRIDGE="vmbr0" VM_PASSWORD=""
-    mkdir -p "$MPCTL_DIR"
+    VM_ID="" VM_NAME="psc" VM_IP="" VM_BRIDGE="vmbr0" VM_PASSWORD=""
+    mkdir -p "$PSC_DIR"
     local active_id=""
-    [[ -f "${MPCTL_DIR}/active" ]] && active_id=$(cat "${MPCTL_DIR}/active")
-    [[ -n "$active_id" && -f "${MPCTL_DIR}/vm_${active_id}.conf" ]] && source "${MPCTL_DIR}/vm_${active_id}.conf" || true
+    [[ -f "${PSC_DIR}/active" ]] && active_id=$(cat "${PSC_DIR}/active")
+    [[ -n "$active_id" && -f "${PSC_DIR}/vm_${active_id}.conf" ]] && source "${PSC_DIR}/vm_${active_id}.conf" || true
 }
 
 save_state() {
-    mkdir -p "$MPCTL_DIR"
+    mkdir -p "$PSC_DIR"
     [[ -z "${VM_ID:-}" ]] && return
-    cat > "${MPCTL_DIR}/vm_${VM_ID}.conf" <<EOF
+    cat > "${PSC_DIR}/vm_${VM_ID}.conf" <<EOF
 VM_ID=${VM_ID}
-VM_NAME=${VM_NAME:-proxyvethmp}
+VM_NAME=${VM_NAME:-psc}
 VM_IP=${VM_IP:-}
 VM_BRIDGE=${VM_BRIDGE:-vmbr0}
 VM_PASSWORD=${VM_PASSWORD:-}
 EOF
-    echo "$VM_ID" > "${MPCTL_DIR}/active"
+    echo "$VM_ID" > "${PSC_DIR}/active"
 }
 
-# Список всех известных VM (из конфигов + из qm list)
 list_vms() {
     local -A known=()
-
-    # Из сохранённых конфигов
-    for f in "${MPCTL_DIR}"/vm_*.conf; do
+    for f in "${PSC_DIR}"/vm_*.conf; do
         [[ -f "$f" ]] || continue
         local id name ip status
         unset VM_ID VM_NAME VM_IP; source "$f" 2>/dev/null || continue
@@ -120,8 +113,6 @@ list_vms() {
         printf "  %-6s %-20s %-18s $(eval echo -e \"${dot}\") %s\n" "$id" "$name" "$ip" "$status"
         known[$id]=1
     done
-
-    # VM из qm, которых нет в конфигах (без IP/имени mpctl)
     while IFS= read -r line; do
         local id; id=$(echo "$line" | awk '{print $1}')
         [[ -z "$id" || -n "${known[$id]:-}" ]] && continue
@@ -132,7 +123,6 @@ list_vms() {
     done < <(qm list 2>/dev/null | tail -n +2)
 }
 
-# Выбор активной VM
 select_vm() {
     echo -e "\n${B}  Выбор VM${R}"
     echo -e "  ${D}──────────────────────────────────────────${R}"
@@ -142,18 +132,15 @@ select_vm() {
     local cur="${VM_ID:-}"
     prompt "VM ID" "$cur" VM_ID
     [[ -z "${VM_ID:-}" ]] && { warn "VM не выбрана"; return 1; }
-
-    # Загружаем конфиг если есть
-    if [[ -f "${MPCTL_DIR}/vm_${VM_ID}.conf" ]]; then
-        source "${MPCTL_DIR}/vm_${VM_ID}.conf"
+    if [[ -f "${PSC_DIR}/vm_${VM_ID}.conf" ]]; then
+        source "${PSC_DIR}/vm_${VM_ID}.conf"
         ok "Активная VM: ${VM_ID} (${VM_NAME}) @ ${VM_IP:-?}"
     else
-        VM_NAME="proxyvethmp"; VM_IP=""; VM_BRIDGE="vmbr0"
-        # Попробуем подхватить имя из qm
-        VM_NAME=$(qm config "$VM_ID" 2>/dev/null | awk '/^name:/{print $2}' || echo "proxyvethmp")
-        warn "Новая VM для mpctl — конфиг будет создан после установки"
+        VM_NAME="psc"; VM_IP=""; VM_BRIDGE="vmbr0"
+        VM_NAME=$(qm config "$VM_ID" 2>/dev/null | awk '/^name:/{print $2}' || echo "psc")
+        warn "Новая VM для PSC — конфиг будет создан после установки"
     fi
-    echo "$VM_ID" > "${MPCTL_DIR}/active"
+    echo "$VM_ID" > "${PSC_DIR}/active"
 }
 
 # ── SSH ──────────────────────────────────────────────────────────
@@ -163,7 +150,6 @@ vm_run()       { ssh $SSH_OPTS root@"${VM_IP}" bash -s <<< "$1"; }
 vm_reachable() { [[ -n "${VM_IP:-}" ]] && vm_exec true 2>/dev/null; }
 vm_running()   { [[ -n "${VM_ID:-}" ]] && qm status "$VM_ID" 2>/dev/null | grep -q "running"; }
 
-# Ждём пока apt/dpkg освободятся на VM (unattended-upgrades после буткапа)
 vm_wait_apt() {
     step "Проверяем apt на VM..."
     vm_run "
@@ -178,7 +164,6 @@ done
 " 2>/dev/null || true
 }
 
-# ── Проверить что VM_IP задан (с попыткой автодетекта) ────────────
 need_ip() {
     load_state
     [[ -n "${VM_ID:-}" ]] || { warn "VM не выбрана"; select_vm || return 1; }
@@ -188,7 +173,6 @@ need_ip() {
     [[ -n "${VM_IP:-}" ]] || fail "IP VM не задан"
 }
 
-# ── IP через qm terminal ─────────────────────────────────────────
 fetch_vm_ip_terminal() {
     apt-get install -y -qq expect 2>/dev/null
     expect -f - 2>/dev/null <<EXPECT | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | grep -v '^127\.' | head -1
@@ -216,7 +200,7 @@ svc_dot() {
 
 show_dashboard() {
     load_state
-    local vm_status="нет VM" st_mp="—" st_pvmp="—" wan="—"
+    local vm_status="нет VM" st_mp="—" st_psc="—" wan="—"
     local vm_dot="${D}●${R}"
 
     if [[ -n "${VM_ID:-}" ]]; then
@@ -226,11 +210,11 @@ show_dashboard() {
                 local _info
                 _info=$(vm_exec "printf '%s\n%s\n%s\n' \
                     \"\$(systemctl is-active mproxy 2>/dev/null || echo inactive)\" \
-                    \"\$(systemctl is-active proxyvethmp 2>/dev/null || echo inactive)\" \
+                    \"\$(systemctl is-active psc 2>/dev/null || echo inactive)\" \
                     \"\$(curl -s --max-time 4 2ip.ru 2>/dev/null || echo '—')\"" 2>/dev/null || echo -e "—\n—\n—")
-                st_mp=$(echo "$_info"   | sed -n '1p')
-                st_pvmp=$(echo "$_info" | sed -n '2p')
-                wan=$(echo "$_info"     | sed -n '3p')
+                st_mp=$(echo "$_info"  | sed -n '1p')
+                st_psc=$(echo "$_info" | sed -n '2p')
+                wan=$(echo "$_info"    | sed -n '3p')
             fi
         else
             vm_status="stopped"; vm_dot="${RD}●${R}"
@@ -238,7 +222,7 @@ show_dashboard() {
     fi
 
     echo -e "\n  ${B}┌──────────────────────────────────────────────┐${R}"
-    echo -e   "  ${B}│  mpctl v${VERSION}  —  Mobile Proxy Control         │${R}"
+    echo -e   "  ${B}│  pscctl v${VERSION}  —  Proxy Control Service        │${R}"
     echo -e   "  ${B}└──────────────────────────────────────────────┘${R}"
     if [[ -n "${VM_ID:-}" ]]; then
         printf  "  VM #%-5s ${B}%-18s${R}" "${VM_ID}" "${VM_NAME:-?}"
@@ -247,8 +231,8 @@ show_dashboard() {
     else
         echo -e "  ${D}VM не выбрана — [v] Выбрать VM${R}"
     fi
-    printf    "  mp.space:    "; echo -e "$(eval "echo -e \"$(svc_dot "$st_mp")\"") ${st_mp}"
-    printf    "  ProxyVethMP: "; echo -e "$(eval "echo -e \"$(svc_dot "$st_pvmp")\"") ${st_pvmp}"
+    printf    "  mp.space:  "; echo -e "$(eval "echo -e \"$(svc_dot "$st_mp")\"") ${st_mp}"
+    printf    "  PSC:       "; echo -e "$(eval "echo -e \"$(svc_dot "$st_psc")\"") ${st_psc}"
     echo ""
 }
 
@@ -290,14 +274,12 @@ do_install_vm() {
         ok "Старая VM удалена"
     fi
 
-    # Proxmox принимает только DNS-совместимые имена: буквы/цифры/дефис,
-    # начинается с буквы или цифры, не заканчивается на дефис.
     while true; do
-        prompt "Имя VM (буквы/цифры/дефис, напр. proxyvethmp)" "proxyvethmp" VM_NAME
+        prompt "Имя VM (буквы/цифры/дефис, напр. psc)" "psc" VM_NAME
         if [[ "$VM_NAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?$ ]]; then
             break
         fi
-        warn "Недопустимое имя «${VM_NAME}» — только латинские буквы, цифры и дефис (не начинается и не заканчивается на дефис)"
+        warn "Недопустимое имя «${VM_NAME}» — только латинские буквы, цифры и дефис"
     done
     prompt "RAM, MB"  "8192"        VM_RAM
     prompt "CPU ядра" "8"           VM_CORES
@@ -326,7 +308,7 @@ do_install_vm() {
         --cpu     host        --net0   "virtio,bridge=${VM_BRIDGE}" \
         --ostype  l26         --machine q35         --scsihw virtio-scsi-pci \
         --serial0 socket      --onboot 1 \
-        || { warn "qm create завершился с ошибкой (см. выше). Установка прервана."; return 1; }
+        || { warn "qm create завершился с ошибкой. Установка прервана."; return 1; }
     ok "VM создана (ID=${VM_ID})"
 
     step "Импорт диска..."
@@ -381,82 +363,79 @@ grep -q '${VM_NAME}' /etc/hosts || echo '127.0.1.1 ${VM_NAME}' >> /etc/hosts
 }
 
 # ══════════════════════════════════════════════════════════════════
-#  INSTALL: ProxyVethMP  (ставим ДО mp.space — чтобы veth-адреса
-#  уже были когда mp.space запустится первый раз)
+#  INSTALL: PSC
 # ══════════════════════════════════════════════════════════════════
-do_install_proxyvethmp() {
-    hdr "Установка ProxyVethMP"
+do_install_psc() {
+    hdr "Установка PSC"
     need_ip
 
     prompt "SHEET_CSV_URL (Enter = позже)" "" SHEET_CSV_URL; SHEET_CSV_URL=${SHEET_CSV_URL:-}
 
-    # Скачиваем на хосте Proxmox (у хоста точно есть интернет),
-    # потом копируем на VM по SCP через локальную сеть.
-    step "Скачиваем proxyveth_mp.py на хост..."
-    local _pyfile; _pyfile=$(mktemp /tmp/proxyveth_mp.XXXXXX.py)
-    wget -q --timeout=30 -O "$_pyfile" "${PROXYVETHMP_URL}" \
-        || { rm -f "$_pyfile"; fail "Не удалось скачать ${PROXYVETHMP_URL}"; }
+    step "Скачиваем psc.py на хост..."
+    local _pyfile; _pyfile=$(mktemp /tmp/psc.XXXXXX.py)
+    wget -q --timeout=30 -O "$_pyfile" "${PSC_URL}" \
+        || { rm -f "$_pyfile"; fail "Не удалось скачать ${PSC_URL}"; }
     head -1 "$_pyfile" | grep -q '^#!' \
         || { rm -f "$_pyfile"; fail "Файл не является Python-скриптом (404 или пусто?)"; }
 
-    step "Копируем proxyveth_mp.py на VM..."
-    scp $SSH_OPTS "$_pyfile" root@"${VM_IP}":/usr/local/bin/proxyveth_mp.py \
+    step "Копируем psc.py на VM..."
+    scp $SSH_OPTS "$_pyfile" root@"${VM_IP}":/usr/local/bin/psc.py \
         || { rm -f "$_pyfile"; fail "SCP не удался — проверь IP и SSH доступ"; }
     rm -f "$_pyfile"
 
-    vm_exec "chmod +x /usr/local/bin/proxyveth_mp.py && ln -sf /usr/local/bin/proxyveth_mp.py /usr/local/bin/proxyveth"
-    ok "proxyveth_mp.py установлен"
+    vm_exec "chmod +x /usr/local/bin/psc.py && ln -sf /usr/local/bin/psc.py /usr/local/bin/psc"
+    ok "psc.py установлен"
 
-    vm_run "mkdir -p /etc/proxyvethmp/logs"
+    vm_run "mkdir -p /etc/psc/logs"
     if [[ -n "${SHEET_CSV_URL:-}" ]]; then
-        vm_exec "echo 'SHEET_CSV_URL=${SHEET_CSV_URL}' > /etc/proxyvethmp/env"
+        vm_exec "echo 'SHEET_CSV_URL=${SHEET_CSV_URL}' > /etc/psc/env"
         ok "SHEET_CSV_URL сохранён"
     else
-        vm_exec "touch /etc/proxyvethmp/env"
+        vm_exec "touch /etc/psc/env"
     fi
 
     vm_wait_apt
     step "Установка зависимостей (tun2socks)..."
-    vm_exec "proxyveth install"
+    vm_exec "psc install"
     ok "Зависимости установлены"
 
     if [[ -n "${SHEET_CSV_URL:-}" ]]; then
         step "Sync + Up all..."
-        vm_exec "SHEET_CSV_URL='${SHEET_CSV_URL}' proxyveth sync && proxyveth up all"
+        vm_exec "SHEET_CSV_URL='${SHEET_CSV_URL}' psc sync && psc up all"
         ok "NS подняты"
     fi
 
     step "Настройка systemd..."
     vm_exec bash << 'REMOTE'
-cat > /etc/systemd/system/proxyvethmp.service << 'EOF'
+cat > /etc/systemd/system/psc.service << 'EOF'
 [Unit]
-Description=ProxyVethMP - SOCKS5 to veth for mp.space
+Description=PSC — Proxy Control Service
 After=network-online.target mproxy.service nodejs-server.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-EnvironmentFile=-/etc/proxyvethmp/env
-ExecStart=/usr/bin/python3 /usr/local/bin/proxyveth_mp.py init
-ExecStart=/usr/bin/python3 /usr/local/bin/proxyveth_mp.py up all
-ExecStop=/usr/bin/python3 /usr/local/bin/proxyveth_mp.py down all
+EnvironmentFile=-/etc/psc/env
+ExecStart=/usr/bin/python3 /usr/local/bin/psc.py init
+ExecStart=/usr/bin/python3 /usr/local/bin/psc.py up all
+ExecStop=/usr/bin/python3 /usr/local/bin/psc.py down all
 TimeoutStartSec=300
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-cat > /etc/systemd/system/proxyvethmp-watchdog.service << 'EOF'
+cat > /etc/systemd/system/psc-watchdog.service << 'EOF'
 [Unit]
-Description=ProxyVethMP Watchdog
-After=proxyvethmp.service
-Requires=proxyvethmp.service
+Description=PSC Watchdog
+After=psc.service
+Requires=psc.service
 
 [Service]
 Type=simple
-EnvironmentFile=-/etc/proxyvethmp/env
-ExecStart=/usr/bin/python3 /usr/local/bin/proxyveth_mp.py watchdog-loop
+EnvironmentFile=-/etc/psc/env
+ExecStart=/usr/bin/python3 /usr/local/bin/psc.py watchdog-loop
 Restart=always
 RestartSec=10
 
@@ -464,19 +443,19 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-cat > /etc/systemd/system/proxyvethmp-autosync.service << 'EOF'
+cat > /etc/systemd/system/psc-autosync.service << 'EOF'
 [Unit]
-Description=ProxyVethMP Autosync
+Description=PSC Autosync
 
 [Service]
 Type=oneshot
-EnvironmentFile=-/etc/proxyvethmp/env
-ExecStart=/usr/bin/python3 /usr/local/bin/proxyveth_mp.py autosync
+EnvironmentFile=-/etc/psc/env
+ExecStart=/usr/bin/python3 /usr/local/bin/psc.py autosync
 EOF
 
-cat > /etc/systemd/system/proxyvethmp-autosync.timer << 'EOF'
+cat > /etc/systemd/system/psc-autosync.timer << 'EOF'
 [Unit]
-Description=ProxyVethMP Autosync every 5 min
+Description=PSC Autosync every 5 min
 
 [Timer]
 OnBootSec=3min
@@ -488,16 +467,16 @@ WantedBy=timers.target
 EOF
 
 systemctl daemon-reload
-systemctl enable proxyvethmp.service proxyvethmp-watchdog.service proxyvethmp-autosync.timer
-systemctl start  proxyvethmp-watchdog.service proxyvethmp-autosync.timer
+systemctl enable psc.service psc-watchdog.service psc-autosync.timer
+systemctl start  psc-watchdog.service psc-autosync.timer
 REMOTE
     ok "Systemd сервисы настроены"
     save_state
-    ok "ProxyVethMP установлен"
+    ok "PSC установлен"
 }
 
 # ══════════════════════════════════════════════════════════════════
-#  INSTALL: mp.space  (после ProxyVethMP — видит готовые veth)
+#  INSTALL: mp.space
 # ══════════════════════════════════════════════════════════════════
 do_install_mp() {
     hdr "Установка mobileproxy.space"
@@ -554,14 +533,13 @@ do_set_sheet() {
     need_ip
     prompt "SHEET_CSV_URL" "" URL
     [[ -n "${URL:-}" ]] || fail "Пусто"
-    # Экранируем & для sed replacement (&  = "matched text" в sed)
     local ESCAPED_URL; ESCAPED_URL=$(printf '%s' "$URL" | sed 's/[&\]/\\&/g')
-    vm_exec "grep -q '^SHEET_CSV_URL=' /etc/proxyvethmp/env \
-        && sed -i 's|^SHEET_CSV_URL=.*|SHEET_CSV_URL=${ESCAPED_URL}|' /etc/proxyvethmp/env \
-        || echo 'SHEET_CSV_URL=${URL}' >> /etc/proxyvethmp/env"
+    vm_exec "grep -q '^SHEET_CSV_URL=' /etc/psc/env \
+        && sed -i 's|^SHEET_CSV_URL=.*|SHEET_CSV_URL=${ESCAPED_URL}|' /etc/psc/env \
+        || echo 'SHEET_CSV_URL=${URL}' >> /etc/psc/env"
     ok "URL сохранён"
     prompt "Запустить sync + up all? (yes/no)" "yes" _c
-    [[ "${_c:-}" == "yes" ]] && { vm_exec "proxyveth sync && proxyveth up all" && ok "Sync + Up выполнены" || warn "Ошибка sync"; }
+    [[ "${_c:-}" == "yes" ]] && { vm_exec "psc sync && psc up all" && ok "Sync + Up выполнены" || warn "Ошибка sync"; }
 }
 
 do_change_vm_params() {
@@ -598,24 +576,24 @@ do_set_ssh() {
     [[ -n "${NEW_PA:-}"   ]] && vm_exec "printf 'PasswordAuthentication ${NEW_PA}\nPermitRootLogin yes\n' > /etc/ssh/sshd_config.d/99-allow-password.conf"
     vm_exec "systemctl restart ssh"
     ok "SSH обновлён"
-    [[ -n "${NEW_PORT:-}" ]] && warn "Порт изменён — обнови SSH_OPTS в mpctl!"
+    [[ -n "${NEW_PORT:-}" ]] && warn "Порт изменён — обнови SSH_OPTS в pscctl!"
 }
 
 # ══════════════════════════════════════════════════════════════════
 #  MANAGE
 # ══════════════════════════════════════════════════════════════════
-do_pvmp_status()  { need_ip; vm_exec "proxyveth status"  || warn "proxyveth не отвечает"; }
-do_pvmp_check()   { need_ip; vm_exec "proxyveth check"   || warn "proxyveth не отвечает"; }
-do_pvmp_sync()    { need_ip; vm_exec "proxyveth sync && proxyveth up all" && ok "Sync + Up выполнены" || warn "Ошибка sync"; }
+do_psc_status()  { need_ip; vm_exec "psc status"  || warn "psc не отвечает"; }
+do_psc_check()   { need_ip; vm_exec "psc check"   || warn "psc не отвечает"; }
+do_psc_sync()    { need_ip; vm_exec "psc sync && psc up all" && ok "Sync + Up выполнены" || warn "Ошибка sync"; }
 
-do_pvmp_restart() {
+do_psc_restart() {
     need_ip
     prompt "Номер NS или all" "all" TARGET
-    vm_exec "proxyveth restart ${TARGET}" && ok "Перезапущено: $TARGET" || warn "Ошибка restart"
+    vm_exec "psc restart ${TARGET}" && ok "Перезапущено: $TARGET" || warn "Ошибка restart"
 }
-do_pvmp_logs() {
+do_psc_logs() {
     need_ip; echo -e "\n  ${D}Ctrl+C для выхода${R}"
-    vm_exec "tail -f /etc/proxyvethmp/logs/watchdog.log" || true
+    vm_exec "tail -f /etc/psc/logs/watchdog.log" || true
 }
 
 do_reboot_vm() {
@@ -648,24 +626,23 @@ do_destroy_vm() {
     [[ "${_c:-}" == "DELETE" ]] || { echo "Отменено"; return; }
     qm stop "$VM_ID" --skiplock 2>/dev/null || true; sleep 3
     qm destroy "$VM_ID" --destroy-unreferenced-disks 1 --purge 1
-    rm -f "${MPCTL_DIR}/vm_${VM_ID}.conf"
-    # Сбрасываем active если удалили активную
-    local cur_active; cur_active=$(cat "${MPCTL_DIR}/active" 2>/dev/null || echo "")
-    [[ "$cur_active" == "$VM_ID" ]] && rm -f "${MPCTL_DIR}/active"
+    rm -f "${PSC_DIR}/vm_${VM_ID}.conf"
+    local cur_active; cur_active=$(cat "${PSC_DIR}/active" 2>/dev/null || echo "")
+    [[ "$cur_active" == "$VM_ID" ]] && rm -f "${PSC_DIR}/active"
     ok "VM удалена"
 }
 
 do_selfupdate() {
     step "Скачиваем последнюю версию..."
     local tmp; tmp=$(mktemp)
-    wget -q -O "$tmp" "$SELF_URL" || fail "Не удалось скачать mpctl"
+    wget -q -O "$tmp" "$SELF_URL" || fail "Не удалось скачать pscctl"
     local new_ver; new_ver=$(grep '^VERSION=' "$tmp" | cut -d'"' -f2)
     if [[ "$new_ver" == "$VERSION" ]]; then
         rm -f "$tmp"; ok "Уже актуальная версия (v${VERSION})"
     else
-        mv "$tmp" /usr/local/bin/mpctl && chmod +x /usr/local/bin/mpctl
+        mv "$tmp" /usr/local/bin/pscctl && chmod +x /usr/local/bin/pscctl
         ok "Обновлено: v${VERSION} → v${new_ver}"
-        exec /usr/local/bin/mpctl
+        exec /usr/local/bin/pscctl
     fi
 }
 
@@ -673,14 +650,14 @@ do_selfupdate() {
 #  SELF-INSTALL
 # ══════════════════════════════════════════════════════════════════
 self_install_prompt() {
-    local target="/usr/local/bin/mpctl"
+    local target="/usr/local/bin/pscctl"
     [[ -f "$target" ]] && return
     echo ""
-    prompt "Установить mpctl как команду /usr/local/bin/mpctl? (yes/no)" "yes" _c
+    prompt "Установить pscctl как команду /usr/local/bin/pscctl? (yes/no)" "yes" _c
     [[ "${_c:-}" == "yes" ]] || return
     wget -q -O "$target" "$SELF_URL" || fail "Не удалось скачать"
     chmod +x "$target"
-    ok "Готово — теперь просто: mpctl"
+    ok "Готово — теперь просто: pscctl"
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -692,22 +669,22 @@ menu_install() {
         echo -e "  ${D}──────────────────────────────────────────${R}"
         echo "  [1] Только VM"
         echo "  [2] Только Софт mp.space"
-        echo "  [3] Только ProxyVethMP"
-        echo "  [4] VM + ProxyVethMP"
+        echo "  [3] Только PSC"
+        echo "  [4] VM + PSC"
         echo "  [5] VM + Софт mp.space"
-        echo "  [6] ProxyVethMP + Софт mp.space"
-        echo "  [7] Полный стек  (VM → ProxyVethMP → mp.space)"
+        echo "  [6] PSC + Софт mp.space"
+        echo "  [7] Полный стек  (VM → PSC → mp.space)"
         echo "  [0] ← Назад"
         echo ""
         prompt_choice
         case ${CHOICE:-} in
             1) do_install_vm ;;
             2) do_install_mp ;;
-            3) do_install_proxyvethmp ;;
-            4) do_install_vm; do_install_proxyvethmp ;;
+            3) do_install_psc ;;
+            4) do_install_vm; do_install_psc ;;
             5) do_install_vm; do_install_mp ;;
-            6) do_install_proxyvethmp; do_install_mp ;;
-            7) do_install_vm; do_install_proxyvethmp; do_install_mp ;;
+            6) do_install_psc; do_install_mp ;;
+            7) do_install_vm; do_install_psc; do_install_mp ;;
             0) return ;;
             *) warn "Неверный выбор" ;;
         esac
@@ -743,25 +720,25 @@ menu_manage() {
         echo -e "\n${B}  Управление${R}  ${D}(VM: ${VM_ID:-?} @ ${VM_IP:-?})${R}"
         echo -e "  ${D}──────────────────────────────────────────${R}"
         echo "  [1] Dashboard"
-        echo "  [2] proxyveth status   (NS + WAN IP)"
-        echo "  [3] proxyveth check    (скорость + ping + 2ip)"
-        echo "  [4] proxyveth sync + up all"
-        echo "  [5] proxyveth restart  [N|all]"
+        echo "  [2] psc status   (NS + WAN IP)"
+        echo "  [3] psc check    (скорость + ping + 2ip)"
+        echo "  [4] psc sync + up all"
+        echo "  [5] psc restart  [N|all]"
         echo "  [6] Логи watchdog"
         echo "  [7] Сводка для ЛК mp.space"
         echo "  [8] Ребут VM"
         echo "  [d] Удалить VM"
-        echo "  [u] Обновить mpctl"
+        echo "  [u] Обновить pscctl"
         echo "  [0] ← Назад"
         echo ""
         prompt_choice
         case ${CHOICE:-} in
             1) show_dashboard ;;
-            2) do_pvmp_status ;;
-            3) do_pvmp_check ;;
-            4) do_pvmp_sync ;;
-            5) do_pvmp_restart ;;
-            6) do_pvmp_logs ;;
+            2) do_psc_status ;;
+            3) do_psc_check ;;
+            4) do_psc_sync ;;
+            5) do_psc_restart ;;
+            6) do_psc_logs ;;
             7) do_show_summary ;;
             8) do_reboot_vm ;;
             d|D) do_destroy_vm ;;
@@ -796,7 +773,7 @@ main_menu() {
 command -v qm    &>/dev/null  || fail "qm не найден — это не хост Proxmox"
 command -v pvesm &>/dev/null  || fail "pvesm не найден"
 
-mkdir -p "$MPCTL_DIR"
+mkdir -p "$PSC_DIR"
 load_state
 self_install_prompt
 main_menu

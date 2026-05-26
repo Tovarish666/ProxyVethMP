@@ -1,4 +1,4 @@
-# mpctl — Mobile Proxy Control
+# PSC — Proxy Control Service
 
 Управление mobile proxy инфраструктурой на Proxmox VE.
 Три компонента, один инструмент.
@@ -9,9 +9,9 @@
 |---|-----------|-----------|
 | 1 | **Ubuntu VM** | Гостевая ВМ (cloud-init, SSH, DHCP) |
 | 2 | **mobileproxy.space** | mproxy + nodejs-server — основной прокси-демон |
-| 3 | **ProxyVethMP** | SOCKS5 → veth-пара → mproxy (source routing) |
+| 3 | **PSC** | SOCKS5 → veth-пара → mproxy (source routing) |
 
-### Как работает ProxyVethMP
+### Как работает PSC
 
 Каждый модем получает изолированный network namespace с TUN-интерфейсом:
 
@@ -34,35 +34,35 @@ mproxy отправляет трафик через `192.168.N.100` → veth →
 
 ```bash
 # На хосте Proxmox, от root:
-bash <(curl -s https://raw.githubusercontent.com/Tovarish666/ProxyVethMP/main/mpctl.sh)
+bash <(curl -s https://raw.githubusercontent.com/Tovarish666/ProxyVethMP/main/pscctl.sh)
 ```
 
-Меню само предложит что установить — VM, ProxyVethMP, mp.space, или всё сразу.
+Меню само предложит что установить — VM, PSC, mp.space, или всё сразу.
 
-## Команды proxyveth (внутри VM)
+## Команды psc (внутри VM)
 
 | Команда | Описание |
 |---------|----------|
-| `proxyveth status` | Таблица NS + WAN IP каждого модема |
-| `proxyveth check` | Диагностика: скорость + ping + 2ip |
-| `proxyveth up [N\|all]` | Поднять namespace(ы) |
-| `proxyveth down [N\|all]` | Опустить namespace(ы) |
-| `proxyveth restart [N\|all]` | Перезапустить |
-| `proxyveth sync` | Синхронизировать конфиг из Google Sheets |
-| `proxyveth autosync` | Sync с применением diff (добавить/удалить/перезапустить) |
-| `proxyveth watchdog` | Разовая проверка watchdog |
-| `proxyveth watchdog-loop` | Watchdog-демон (бесконечный цикл) |
-| `proxyveth show-config` | Показать конфиг модемов |
-| `proxyveth cleanup` | Полная очистка (NS, iptables, veth) |
+| `psc status` | Таблица NS + WAN IP каждого модема |
+| `psc check` | Диагностика: скорость + ping + 2ip |
+| `psc up [N\|all]` | Поднять namespace(ы) |
+| `psc down [N\|all]` | Опустить namespace(ы) |
+| `psc restart [N\|all]` | Перезапустить |
+| `psc sync` | Синхронизировать конфиг из Google Sheets |
+| `psc autosync` | Sync с применением diff (добавить/удалить/перезапустить) |
+| `psc watchdog` | Разовая проверка watchdog |
+| `psc watchdog-loop` | Watchdog-демон (бесконечный цикл) |
+| `psc show-config` | Показать конфиг модемов |
+| `psc cleanup` | Полная очистка (NS, iptables, veth) |
 
-### `proxyveth check` — диагностика
+### `psc check` — диагностика
 
 ```
-  N  │  Proxy              │  DL       │  Ping  │ 2ip │ Статус
-  ───┼─────────────────────┼───────────┼────────┼─────┼────────
-   1 │ 1.2.3.4:1080        │ 15.2 Mb/s │  45ms  │  ✓  │ OK
-   2 │ 1.2.3.5:1080        │ 12.8 Mb/s │  67ms  │  ✗  │ WLIST
-   3 │ 1.2.3.6:1080        │    —      │   —    │  —  │ DEAD
+  N  │  WAN IP         │  DL        │  Ping  │ Статус
+  ───┼─────────────────┼────────────┼────────┼────────
+   1 │ 1.2.3.4         │ 15.2 Mb/s  │  45ms  │ OK
+   2 │ 1.2.3.5         │ 12.8 Mb/s  │  67ms  │ WLIST
+   3 │ —               │    —       │   —    │ DEAD
 ```
 
 | Статус | Значение |
@@ -88,36 +88,36 @@ bash <(curl -s https://raw.githubusercontent.com/Tovarish666/ProxyVethMP/main/mp
 | n | proxy_host | proxy_port | login | password |
 |---|-----------|-----------|-------|---------|
 
-URL для mpctl: `https://...pub?gid=XXXX&single=true&output=csv`
+URL для pscctl: `https://...pub?gid=XXXX&single=true&output=csv`
 
 ## Файловая структура
 
 ```
-/etc/proxyvethmp/
+/etc/psc/
 ├── config.json          # конфиг модемов (из Google Sheets)
 ├── env                  # переменные окружения
 └── logs/
     └── watchdog.log
 
 /usr/local/bin/
-├── proxyveth_mp.py      # основной Python-скрипт
-├── proxyveth -> ...     # симлинк
+├── psc.py               # основной Python-скрипт
+├── psc -> ...           # симлинк
 └── tun2socks            # бинарь tun2socks v2.5.2
 
 /etc/systemd/system/
-├── proxyvethmp.service           # up all при старте системы
-├── proxyvethmp-watchdog.service  # watchdog-демон
-├── proxyvethmp-autosync.service  # разовый sync
-└── proxyvethmp-autosync.timer    # sync каждые 5 минут
+├── psc.service           # up all при старте системы
+├── psc-watchdog.service  # watchdog-демон
+├── psc-autosync.service  # разовый sync
+└── psc-autosync.timer    # sync каждые 5 минут
 ```
 
-## Переменные окружения (`/etc/proxyvethmp/env`)
+## Переменные окружения (`/etc/psc/env`)
 
 | Переменная | Описание | Дефолт |
 |------------|----------|--------|
 | `SHEET_CSV_URL` | URL CSV-экспорта Google Sheets | — |
 | `SHEET_ID` + `SHEET_GID` | ID таблицы + ID листа (альтернатива URL) | — |
-| `YASPEED_URL` | URL бинаря yaspeed для `proxyveth check` | — |
+| `YASPEED_URL` | URL бинаря yaspeed для `psc check` | — |
 | `WATCHDOG_INTERVAL` | Интервал watchdog (сек) | 60 |
 | `WATCHDOG_WAN_EVERY` | WAN-проверка каждые N итераций | 10 |
 | `WATCHDOG_MAX_RESTART` | Макс. перезапусков на модем | 3 |
