@@ -1,22 +1,22 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-#  mpctl — Mobile Proxy Control  v1.1
-#  https://github.com/Tovarish666/ProxyVethMP
+#  pcs — Proxy Control Service  v1.1
+#  https://github.com/Tovarish666/ProxyControlService
 #
-#  Запуск: bash <(curl -s https://raw.githubusercontent.com/Tovarish666/ProxyVethMP/main/mpctl.sh)
+#  Запуск: bash <(curl -s https://raw.githubusercontent.com/Tovarish666/ProxyControlService/main/pcs.sh)
 # ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
 VERSION="1.1"
-GITHUB_RAW="https://raw.githubusercontent.com/Tovarish666/ProxyVethMP/main"
-PROXYVETHMP_URL="${GITHUB_RAW}/proxyveth_mp.py"
-SELF_URL="${GITHUB_RAW}/mpctl.sh"
+GITHUB_RAW="https://raw.githubusercontent.com/Tovarish666/ProxyControlService/main"
+PROXYVETH_URL="${GITHUB_RAW}/proxyveth.py"
+SELF_URL="${GITHUB_RAW}/pcs.sh"
 
 UBUNTU_IMG_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
 UBUNTU_SHA256_URL="https://cloud-images.ubuntu.com/noble/current/SHA256SUMS"
 UBUNTU_IMG_PATH="/var/lib/vz/template/iso/ubuntu-24.04-noble.img"
 
-MPCTL_DIR="/etc/mpctl"
+PCS_DIR="/etc/pcs"
 
 # ── Цвета ───────────────────────────────────────────────────────
 R="\033[0m"; G="\033[32m"; RD="\033[31m"; Y="\033[33m"
@@ -78,30 +78,30 @@ spinner_stop() {
 
 # ══════════════════════════════════════════════════════════════════
 #  MULTI-VM STATE
-#  /etc/mpctl/vm_106.conf  — конфиг конкретной VM
-#  /etc/mpctl/active       — ID активной VM
+#  /etc/pcs/vm_106.conf  — конфиг конкретной VM
+#  /etc/pcs/active       — ID активной VM
 # ══════════════════════════════════════════════════════════════════
-VM_ID="" VM_NAME="proxyvethmp" VM_IP="" VM_BRIDGE="vmbr0" VM_PASSWORD=""
+VM_ID="" VM_NAME="proxyveth" VM_IP="" VM_BRIDGE="vmbr0" VM_PASSWORD=""
 
 load_state() {
-    VM_ID="" VM_NAME="proxyvethmp" VM_IP="" VM_BRIDGE="vmbr0" VM_PASSWORD=""
-    mkdir -p "$MPCTL_DIR"
+    VM_ID="" VM_NAME="proxyveth" VM_IP="" VM_BRIDGE="vmbr0" VM_PASSWORD=""
+    mkdir -p "$PCS_DIR"
     local active_id=""
-    [[ -f "${MPCTL_DIR}/active" ]] && active_id=$(cat "${MPCTL_DIR}/active")
-    [[ -n "$active_id" && -f "${MPCTL_DIR}/vm_${active_id}.conf" ]] && source "${MPCTL_DIR}/vm_${active_id}.conf" || true
+    [[ -f "${PCS_DIR}/active" ]] && active_id=$(cat "${PCS_DIR}/active")
+    [[ -n "$active_id" && -f "${PCS_DIR}/vm_${active_id}.conf" ]] && source "${PCS_DIR}/vm_${active_id}.conf" || true
 }
 
 save_state() {
-    mkdir -p "$MPCTL_DIR"
+    mkdir -p "$PCS_DIR"
     [[ -z "${VM_ID:-}" ]] && return
-    cat > "${MPCTL_DIR}/vm_${VM_ID}.conf" <<EOF
+    cat > "${PCS_DIR}/vm_${VM_ID}.conf" <<EOF
 VM_ID=${VM_ID}
-VM_NAME=${VM_NAME:-proxyvethmp}
+VM_NAME=${VM_NAME:-proxyveth}
 VM_IP=${VM_IP:-}
 VM_BRIDGE=${VM_BRIDGE:-vmbr0}
 VM_PASSWORD=${VM_PASSWORD:-}
 EOF
-    echo "$VM_ID" > "${MPCTL_DIR}/active"
+    echo "$VM_ID" > "${PCS_DIR}/active"
 }
 
 # Список всех известных VM (из конфигов + из qm list)
@@ -109,7 +109,7 @@ list_vms() {
     local -A known=()
 
     # Из сохранённых конфигов
-    for f in "${MPCTL_DIR}"/vm_*.conf; do
+    for f in "${PCS_DIR}"/vm_*.conf; do
         [[ -f "$f" ]] || continue
         local id name ip status
         unset VM_ID VM_NAME VM_IP; source "$f" 2>/dev/null || continue
@@ -121,7 +121,7 @@ list_vms() {
         known[$id]=1
     done
 
-    # VM из qm, которых нет в конфигах (без IP/имени mpctl)
+    # VM из qm, которых нет в конфигах (без IP/имени pcs)
     while IFS= read -r line; do
         local id; id=$(echo "$line" | awk '{print $1}')
         [[ -z "$id" || -n "${known[$id]:-}" ]] && continue
@@ -144,16 +144,16 @@ select_vm() {
     [[ -z "${VM_ID:-}" ]] && { warn "VM не выбрана"; return 1; }
 
     # Загружаем конфиг если есть
-    if [[ -f "${MPCTL_DIR}/vm_${VM_ID}.conf" ]]; then
-        source "${MPCTL_DIR}/vm_${VM_ID}.conf"
+    if [[ -f "${PCS_DIR}/vm_${VM_ID}.conf" ]]; then
+        source "${PCS_DIR}/vm_${VM_ID}.conf"
         ok "Активная VM: ${VM_ID} (${VM_NAME}) @ ${VM_IP:-?}"
     else
-        VM_NAME="proxyvethmp"; VM_IP=""; VM_BRIDGE="vmbr0"
+        VM_NAME="proxyveth"; VM_IP=""; VM_BRIDGE="vmbr0"
         # Попробуем подхватить имя из qm
-        VM_NAME=$(qm config "$VM_ID" 2>/dev/null | awk '/^name:/{print $2}' || echo "proxyvethmp")
-        warn "Новая VM для mpctl — конфиг будет создан после установки"
+        VM_NAME=$(qm config "$VM_ID" 2>/dev/null | awk '/^name:/{print $2}' || echo "proxyveth")
+        warn "Новая VM для pcs — конфиг будет создан после установки"
     fi
-    echo "$VM_ID" > "${MPCTL_DIR}/active"
+    echo "$VM_ID" > "${PCS_DIR}/active"
 }
 
 # ── SSH ──────────────────────────────────────────────────────────
@@ -226,7 +226,7 @@ show_dashboard() {
                 local _info
                 _info=$(vm_exec "printf '%s\n%s\n%s\n' \
                     \"\$(systemctl is-active mproxy 2>/dev/null || echo inactive)\" \
-                    \"\$(systemctl is-active proxyvethmp 2>/dev/null || echo inactive)\" \
+                    \"\$(systemctl is-active proxyveth 2>/dev/null || echo inactive)\" \
                     \"\$(curl -s --max-time 4 2ip.ru 2>/dev/null || echo '—')\"" 2>/dev/null || echo -e "—\n—\n—")
                 st_mp=$(echo "$_info"   | sed -n '1p')
                 st_pvmp=$(echo "$_info" | sed -n '2p')
@@ -238,7 +238,7 @@ show_dashboard() {
     fi
 
     echo -e "\n  ${B}┌──────────────────────────────────────────────┐${R}"
-    echo -e   "  ${B}│  mpctl v${VERSION}  —  Mobile Proxy Control         │${R}"
+    echo -e   "  ${B}│  pcs v${VERSION}  —  Proxy Control Service         │${R}"
     echo -e   "  ${B}└──────────────────────────────────────────────┘${R}"
     if [[ -n "${VM_ID:-}" ]]; then
         printf  "  VM #%-5s ${B}%-18s${R}" "${VM_ID}" "${VM_NAME:-?}"
@@ -248,7 +248,7 @@ show_dashboard() {
         echo -e "  ${D}VM не выбрана — [v] Выбрать VM${R}"
     fi
     printf    "  mp.space:    "; echo -e "$(eval "echo -e \"$(svc_dot "$st_mp")\"") ${st_mp}"
-    printf    "  ProxyVethMP: "; echo -e "$(eval "echo -e \"$(svc_dot "$st_pvmp")\"") ${st_pvmp}"
+    printf    "  ProxyVeth: "; echo -e "$(eval "echo -e \"$(svc_dot "$st_pvmp")\"") ${st_pvmp}"
     echo ""
 }
 
@@ -293,7 +293,7 @@ do_install_vm() {
     # Proxmox принимает только DNS-совместимые имена: буквы/цифры/дефис,
     # начинается с буквы или цифры, не заканчивается на дефис.
     while true; do
-        prompt "Имя VM (буквы/цифры/дефис, напр. proxyvethmp)" "proxyvethmp" VM_NAME
+        prompt "Имя VM (буквы/цифры/дефис, напр. proxyveth)" "proxyveth" VM_NAME
         if [[ "$VM_NAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?$ ]]; then
             break
         fi
@@ -381,38 +381,38 @@ grep -q '${VM_NAME}' /etc/hosts || echo '127.0.1.1 ${VM_NAME}' >> /etc/hosts
 }
 
 # ══════════════════════════════════════════════════════════════════
-#  INSTALL: ProxyVethMP  (ставим ДО mp.space — чтобы veth-адреса
+#  INSTALL: ProxyVeth  (ставим ДО mp.space — чтобы veth-адреса
 #  уже были когда mp.space запустится первый раз)
 # ══════════════════════════════════════════════════════════════════
-do_install_proxyvethmp() {
-    hdr "Установка ProxyVethMP"
+do_install_proxyveth() {
+    hdr "Установка ProxyVeth"
     need_ip
 
     prompt "SHEET_CSV_URL (Enter = позже)" "" SHEET_CSV_URL; SHEET_CSV_URL=${SHEET_CSV_URL:-}
 
     # Скачиваем на хосте Proxmox (у хоста точно есть интернет),
     # потом копируем на VM по SCP через локальную сеть.
-    step "Скачиваем proxyveth_mp.py на хост..."
-    local _pyfile; _pyfile=$(mktemp /tmp/proxyveth_mp.XXXXXX.py)
-    wget -q --timeout=30 -O "$_pyfile" "${PROXYVETHMP_URL}" \
-        || { rm -f "$_pyfile"; fail "Не удалось скачать ${PROXYVETHMP_URL}"; }
+    step "Скачиваем proxyveth.py на хост..."
+    local _pyfile; _pyfile=$(mktemp /tmp/proxyveth.XXXXXX.py)
+    wget -q --timeout=30 -O "$_pyfile" "${PROXYVETH_URL}" \
+        || { rm -f "$_pyfile"; fail "Не удалось скачать ${PROXYVETH_URL}"; }
     head -1 "$_pyfile" | grep -q '^#!' \
         || { rm -f "$_pyfile"; fail "Файл не является Python-скриптом (404 или пусто?)"; }
 
-    step "Копируем proxyveth_mp.py на VM..."
-    scp $SSH_OPTS "$_pyfile" root@"${VM_IP}":/usr/local/bin/proxyveth_mp.py \
+    step "Копируем proxyveth.py на VM..."
+    scp $SSH_OPTS "$_pyfile" root@"${VM_IP}":/usr/local/bin/proxyveth.py \
         || { rm -f "$_pyfile"; fail "SCP не удался — проверь IP и SSH доступ"; }
     rm -f "$_pyfile"
 
-    vm_exec "chmod +x /usr/local/bin/proxyveth_mp.py && ln -sf /usr/local/bin/proxyveth_mp.py /usr/local/bin/proxyveth"
-    ok "proxyveth_mp.py установлен"
+    vm_exec "chmod +x /usr/local/bin/proxyveth.py && ln -sf /usr/local/bin/proxyveth.py /usr/local/bin/proxyveth"
+    ok "proxyveth.py установлен"
 
-    vm_run "mkdir -p /etc/proxyvethmp/logs"
+    vm_run "mkdir -p /etc/proxyveth/logs"
     if [[ -n "${SHEET_CSV_URL:-}" ]]; then
-        vm_exec "echo 'SHEET_CSV_URL=${SHEET_CSV_URL}' > /etc/proxyvethmp/env"
+        vm_exec "echo 'SHEET_CSV_URL=${SHEET_CSV_URL}' > /etc/proxyveth/env"
         ok "SHEET_CSV_URL сохранён"
     else
-        vm_exec "touch /etc/proxyvethmp/env"
+        vm_exec "touch /etc/proxyveth/env"
     fi
 
     vm_wait_apt
@@ -428,35 +428,35 @@ do_install_proxyvethmp() {
 
     step "Настройка systemd..."
     vm_exec bash << 'REMOTE'
-cat > /etc/systemd/system/proxyvethmp.service << 'EOF'
+cat > /etc/systemd/system/proxyveth.service << 'EOF'
 [Unit]
-Description=ProxyVethMP - SOCKS5 to veth for mp.space
+Description=ProxyVeth - SOCKS5 to veth for mp.space
 After=network-online.target mproxy.service nodejs-server.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-EnvironmentFile=-/etc/proxyvethmp/env
-ExecStart=/usr/bin/python3 /usr/local/bin/proxyveth_mp.py init
-ExecStart=/usr/bin/python3 /usr/local/bin/proxyveth_mp.py up all
-ExecStop=/usr/bin/python3 /usr/local/bin/proxyveth_mp.py down all
+EnvironmentFile=-/etc/proxyveth/env
+ExecStart=/usr/bin/python3 /usr/local/bin/proxyveth.py init
+ExecStart=/usr/bin/python3 /usr/local/bin/proxyveth.py up all
+ExecStop=/usr/bin/python3 /usr/local/bin/proxyveth.py down all
 TimeoutStartSec=300
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-cat > /etc/systemd/system/proxyvethmp-watchdog.service << 'EOF'
+cat > /etc/systemd/system/proxyveth-watchdog.service << 'EOF'
 [Unit]
-Description=ProxyVethMP Watchdog
-After=proxyvethmp.service
-Requires=proxyvethmp.service
+Description=ProxyVeth Watchdog
+After=proxyveth.service
+Requires=proxyveth.service
 
 [Service]
 Type=simple
-EnvironmentFile=-/etc/proxyvethmp/env
-ExecStart=/usr/bin/python3 /usr/local/bin/proxyveth_mp.py watchdog-loop
+EnvironmentFile=-/etc/proxyveth/env
+ExecStart=/usr/bin/python3 /usr/local/bin/proxyveth.py watchdog-loop
 Restart=always
 RestartSec=10
 
@@ -464,19 +464,19 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-cat > /etc/systemd/system/proxyvethmp-autosync.service << 'EOF'
+cat > /etc/systemd/system/proxyveth-autosync.service << 'EOF'
 [Unit]
-Description=ProxyVethMP Autosync
+Description=ProxyVeth Autosync
 
 [Service]
 Type=oneshot
-EnvironmentFile=-/etc/proxyvethmp/env
-ExecStart=/usr/bin/python3 /usr/local/bin/proxyveth_mp.py autosync
+EnvironmentFile=-/etc/proxyveth/env
+ExecStart=/usr/bin/python3 /usr/local/bin/proxyveth.py autosync
 EOF
 
-cat > /etc/systemd/system/proxyvethmp-autosync.timer << 'EOF'
+cat > /etc/systemd/system/proxyveth-autosync.timer << 'EOF'
 [Unit]
-Description=ProxyVethMP Autosync every 5 min
+Description=ProxyVeth Autosync every 5 min
 
 [Timer]
 OnBootSec=3min
@@ -488,16 +488,16 @@ WantedBy=timers.target
 EOF
 
 systemctl daemon-reload
-systemctl enable proxyvethmp.service proxyvethmp-watchdog.service proxyvethmp-autosync.timer
-systemctl start  proxyvethmp-watchdog.service proxyvethmp-autosync.timer
+systemctl enable proxyveth.service proxyveth-watchdog.service proxyveth-autosync.timer
+systemctl start  proxyveth-watchdog.service proxyveth-autosync.timer
 REMOTE
     ok "Systemd сервисы настроены"
     save_state
-    ok "ProxyVethMP установлен"
+    ok "ProxyVeth установлен"
 }
 
 # ══════════════════════════════════════════════════════════════════
-#  INSTALL: mp.space  (после ProxyVethMP — видит готовые veth)
+#  INSTALL: mp.space  (после ProxyVeth — видит готовые veth)
 # ══════════════════════════════════════════════════════════════════
 do_install_mp() {
     hdr "Установка mobileproxy.space"
@@ -510,16 +510,23 @@ do_install_mp() {
     [[ -n "${AUTH_MP_CONTENT:-}" ]] || fail "auth.mp не может быть пустым"
 
     step "install.sh..."
-    vm_exec "wget -O - https://mobileproxy.space/downloads/sp/install.sh | bash"
+    # install.sh может завершиться обрывом сессии — не валим set -e
+    vm_exec "wget -O - https://mobileproxy.space/downloads/sp/install.sh | bash" || true
     ok "install.sh завершён"
 
-    step "setup-modem-management.sh..."
-    vm_exec "wget -O - https://mobileproxy.space/downloads/sp/setup-modem-management.sh | bash"
-    ok "setup-modem-management.sh завершён"
-
+    # ── Пишем СВОЙ токен сразу после install.sh, пока SSH-сессия жива. ──
+    # install.sh генерит собственный auth.mp (proxy_xxx) — его нужно перебить.
+    # setup-modem-management.sh ниже ребутает VM и рвёт сессию → при set -e
+    # запись токена после него не выполнялась, оставался левый proxy_xxx.
     step "Записываем auth.mp..."
     printf '%s' "$AUTH_MP_CONTENT" | vm_exec "cat > /home/nodejs/work/auth.mp"
-    ok "auth.mp записан"
+    vm_exec "systemctl restart mproxy nodejs-server 2>/dev/null || true"
+    ok "auth.mp записан + сервисы перезапущены"
+
+    step "setup-modem-management.sh..."
+    # ставит GRUB/initramfs и ребутает VM → обрыв пайпа ('Cannot write to -') это норма
+    vm_exec "wget -O - https://mobileproxy.space/downloads/sp/setup-modem-management.sh | bash" || true
+    ok "setup-modem-management.sh завершён"
 
     step "Перезагрузка VM..."
     vm_exec "reboot" || true; sleep 20
@@ -530,6 +537,10 @@ do_install_mp() {
         [[ $elapsed -ge 120 ]] && { spinner_stop; fail "VM не поднялась после ребута"; }
     done
     spinner_stop; ok "VM перезагружена"
+
+    # Контроль: токен должен быть НАШ, а не сгенерённый install.sh (proxy_xxx)
+    step "Проверка auth.mp..."
+    vm_exec "cat /home/nodejs/work/auth.mp" || true
 
     vm_exec "systemctl is-active mproxy nodejs-server 2>/dev/null || true" | while read -r s; do
         [[ "$s" == "active" ]] && ok "Сервис: $s" || warn "Сервис: $s"
@@ -556,9 +567,9 @@ do_set_sheet() {
     [[ -n "${URL:-}" ]] || fail "Пусто"
     # Экранируем & для sed replacement (&  = "matched text" в sed)
     local ESCAPED_URL; ESCAPED_URL=$(printf '%s' "$URL" | sed 's/[&\]/\\&/g')
-    vm_exec "grep -q '^SHEET_CSV_URL=' /etc/proxyvethmp/env \
-        && sed -i 's|^SHEET_CSV_URL=.*|SHEET_CSV_URL=${ESCAPED_URL}|' /etc/proxyvethmp/env \
-        || echo 'SHEET_CSV_URL=${URL}' >> /etc/proxyvethmp/env"
+    vm_exec "grep -q '^SHEET_CSV_URL=' /etc/proxyveth/env \
+        && sed -i 's|^SHEET_CSV_URL=.*|SHEET_CSV_URL=${ESCAPED_URL}|' /etc/proxyveth/env \
+        || echo 'SHEET_CSV_URL=${URL}' >> /etc/proxyveth/env"
     ok "URL сохранён"
     prompt "Запустить sync + up all? (yes/no)" "yes" _c
     [[ "${_c:-}" == "yes" ]] && { vm_exec "proxyveth sync && proxyveth up all" && ok "Sync + Up выполнены" || warn "Ошибка sync"; }
@@ -598,7 +609,7 @@ do_set_ssh() {
     [[ -n "${NEW_PA:-}"   ]] && vm_exec "printf 'PasswordAuthentication ${NEW_PA}\nPermitRootLogin yes\n' > /etc/ssh/sshd_config.d/99-allow-password.conf"
     vm_exec "systemctl restart ssh"
     ok "SSH обновлён"
-    [[ -n "${NEW_PORT:-}" ]] && warn "Порт изменён — обнови SSH_OPTS в mpctl!"
+    [[ -n "${NEW_PORT:-}" ]] && warn "Порт изменён — обнови SSH_OPTS в pcs!"
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -622,7 +633,7 @@ do_pvmp_check() {
 
 do_pvmp_logs() {
     need_ip; echo -e "\n  ${D}Ctrl+C для выхода${R}"
-    vm_exec "tail -f /etc/proxyvethmp/logs/watchdog.log" || true
+    vm_exec "tail -f /etc/proxyveth/logs/watchdog.log" || true
 }
 
 do_reboot_vm() {
@@ -655,24 +666,24 @@ do_destroy_vm() {
     [[ "${_c:-}" == "DELETE" ]] || { echo "Отменено"; return; }
     qm stop "$VM_ID" --skiplock 2>/dev/null || true; sleep 3
     qm destroy "$VM_ID" --destroy-unreferenced-disks 1 --purge 1
-    rm -f "${MPCTL_DIR}/vm_${VM_ID}.conf"
+    rm -f "${PCS_DIR}/vm_${VM_ID}.conf"
     # Сбрасываем active если удалили активную
-    local cur_active; cur_active=$(cat "${MPCTL_DIR}/active" 2>/dev/null || echo "")
-    [[ "$cur_active" == "$VM_ID" ]] && rm -f "${MPCTL_DIR}/active"
+    local cur_active; cur_active=$(cat "${PCS_DIR}/active" 2>/dev/null || echo "")
+    [[ "$cur_active" == "$VM_ID" ]] && rm -f "${PCS_DIR}/active"
     ok "VM удалена"
 }
 
 do_selfupdate() {
     step "Скачиваем последнюю версию..."
     local tmp; tmp=$(mktemp)
-    wget -q -O "$tmp" "$SELF_URL" || fail "Не удалось скачать mpctl"
+    wget -q -O "$tmp" "$SELF_URL" || fail "Не удалось скачать pcs"
     local new_ver; new_ver=$(grep '^VERSION=' "$tmp" | cut -d'"' -f2)
     if [[ "$new_ver" == "$VERSION" ]]; then
         rm -f "$tmp"; ok "Уже актуальная версия (v${VERSION})"
     else
-        mv "$tmp" /usr/local/bin/mpctl && chmod +x /usr/local/bin/mpctl
+        mv "$tmp" /usr/local/bin/pcs && chmod +x /usr/local/bin/pcs
         ok "Обновлено: v${VERSION} → v${new_ver}"
-        exec /usr/local/bin/mpctl
+        exec /usr/local/bin/pcs
     fi
 }
 
@@ -680,14 +691,14 @@ do_selfupdate() {
 #  SELF-INSTALL
 # ══════════════════════════════════════════════════════════════════
 self_install_prompt() {
-    local target="/usr/local/bin/mpctl"
+    local target="/usr/local/bin/pcs"
     [[ -f "$target" ]] && return
     echo ""
-    prompt "Установить mpctl как команду /usr/local/bin/mpctl? (yes/no)" "yes" _c
+    prompt "Установить pcs как команду /usr/local/bin/pcs? (yes/no)" "yes" _c
     [[ "${_c:-}" == "yes" ]] || return
     wget -q -O "$target" "$SELF_URL" || fail "Не удалось скачать"
     chmod +x "$target"
-    ok "Готово — теперь просто: mpctl"
+    ok "Готово — теперь просто: pcs"
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -699,22 +710,22 @@ menu_install() {
         echo -e "  ${D}──────────────────────────────────────────${R}"
         echo "  [1] Только VM"
         echo "  [2] Только Софт mp.space"
-        echo "  [3] Только ProxyVethMP"
-        echo "  [4] VM + ProxyVethMP"
+        echo "  [3] Только ProxyVeth"
+        echo "  [4] VM + ProxyVeth"
         echo "  [5] VM + Софт mp.space"
-        echo "  [6] ProxyVethMP + Софт mp.space"
-        echo "  [7] Полный стек  (VM → ProxyVethMP → mp.space)"
+        echo "  [6] ProxyVeth + Софт mp.space"
+        echo "  [7] Полный стек  (VM → ProxyVeth → mp.space)"
         echo "  [0] ← Назад"
         echo ""
         prompt_choice
         case ${CHOICE:-} in
             1) do_install_vm ;;
             2) do_install_mp ;;
-            3) do_install_proxyvethmp ;;
-            4) do_install_vm; do_install_proxyvethmp ;;
+            3) do_install_proxyveth ;;
+            4) do_install_vm; do_install_proxyveth ;;
             5) do_install_vm; do_install_mp ;;
-            6) do_install_proxyvethmp; do_install_mp ;;
-            7) do_install_vm; do_install_proxyvethmp; do_install_mp ;;
+            6) do_install_proxyveth; do_install_mp ;;
+            7) do_install_vm; do_install_proxyveth; do_install_mp ;;
             0) return ;;
             *) warn "Неверный выбор" ;;
         esac
@@ -759,7 +770,7 @@ menu_manage() {
         echo "  [8] Сводка для ЛК mp.space"
         echo "  [9] Ребут VM"
         echo "  [d] Удалить VM"
-        echo "  [u] Обновить mpctl"
+        echo "  [u] Обновить pcs"
         echo "  [0] ← Назад"
         echo ""
         prompt_choice
@@ -805,7 +816,7 @@ main_menu() {
 command -v qm    &>/dev/null  || fail "qm не найден — это не хост Proxmox"
 command -v pvesm &>/dev/null  || fail "pvesm не найден"
 
-mkdir -p "$MPCTL_DIR"
+mkdir -p "$PCS_DIR"
 load_state
 self_install_prompt
 main_menu
