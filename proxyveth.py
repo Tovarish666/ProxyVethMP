@@ -285,7 +285,7 @@ def watchdog_check_ns(n, modem, check_wan=False):
     if not is_ns_exists(n): return "ns_missing"
     if not is_process_running(f"tun2socks.*tun{n}"): return "tun_dead"
     if check_wan:
-        r=run_safe(f"curl -s --max-time {CURL_TIMEOUT} --interface 192.168.{n}.100 2ip.ru", capture=True, quiet=True)
+        r=run_safe(f"curl -s --max-time {CURL_TIMEOUT} --interface 192.168.{n}.100 http://ip-api.com/line/?fields=query", capture=True, quiet=True)
         if r.returncode!=0 or not r.stdout.strip(): return "wan_dead"
     return "ok"
 
@@ -342,7 +342,7 @@ def cmd_status(check_wan=False):
             up+=1; ns_m=f"{G}{'UP':^6}{R}"; t=is_process_running(f"tun2socks.*tun{n}"); tm=f"{G}{'✓':^5}{R}" if t else f"{RD}{'✗':^5}{R}"
             w=""
             if check_wan:
-                wr=run_safe(f"curl -s --max-time {CURL_TIMEOUT} --interface 192.168.{n}.100 2ip.ru", capture=True, quiet=True)
+                wr=run_safe(f"curl -s --max-time {CURL_TIMEOUT} --interface 192.168.{n}.100 http://ip-api.com/line/?fields=query", capture=True, quiet=True)
                 w=f"  {wr.stdout.strip() if wr.returncode==0 else '—'}"
         else: down+=1; ns_m=f"{RD}{'DOWN':^6}{R}"; tm=f"{D}{'—':^5}{R}"; w=""
         print(f"  {n:>3} │ {ps:<28} │ {ns_m} │ {tm}{w}")
@@ -352,9 +352,9 @@ def cmd_status(check_wan=False):
 def cmd_check(target):
     n=int(target); header(f"CHECK ns_{n}")
     if not is_ns_exists(n): log_fail(f"ns_{n} не существует"); return
-    r=run_safe(f"curl -s --max-time {CURL_TIMEOUT} --interface 192.168.{n}.100 2ip.ru", capture=True, quiet=True)
+    r=run_safe(f"curl -s --max-time {CURL_TIMEOUT} --interface 192.168.{n}.100 http://ip-api.com/line/?fields=query", capture=True, quiet=True)
     (log_ok if r.returncode==0 and r.stdout.strip() else log_fail)(f"WAN IP (хост):  {r.stdout.strip() or 'недоступен'}")
-    r=run_safe(f"curl -s --max-time {CURL_TIMEOUT} 2ip.ru", ns=n, capture=True, quiet=True)
+    r=run_safe(f"curl -s --max-time {CURL_TIMEOUT} http://ip-api.com/line/?fields=query", ns=n, capture=True, quiet=True)
     (log_ok if r.returncode==0 and r.stdout.strip() else log_fail)(f"WAN IP (ns):    {r.stdout.strip() or 'недоступен'}")
     r=run_safe(f"curl -s --max-time 5 --interface 192.168.{n}.100 http://192.168.{n}.1/api/webserver/SesTokInfo", capture=True, quiet=True)
     (log_ok if "SesInfo" in r.stdout else log_fail)(f"Huawei API .1:  {'OK' if 'SesInfo' in r.stdout else 'недоступен'}")
@@ -475,7 +475,7 @@ def cmd_setup():
     link=Path("/usr/local/bin/proxyveth"); link.unlink(missing_ok=True); link.symlink_to(SCRIPT_PATH)
     log_ok("Symlink: proxyveth → proxyveth.py")
     active=len(get_active_ns_list()); enabled=len(get_enabled_modems(config))
-    wan_ip=run_safe("curl -s --max-time 5 2ip.ru",capture=True).stdout.strip()
+    wan_ip=run_safe("curl -s --max-time 5 http://ip-api.com/line/?fields=query",capture=True).stdout.strip()
     loc_ip=run_safe("hostname -I",capture=True).stdout.split()[0]
     print(f"""
 {G}{'═'*60}
